@@ -395,12 +395,13 @@ def get_main_menu_keyboard(user_lang: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text=get_text(user_lang, 'post_listing')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'view_listings')))
+    builder.add(KeyboardButton(text=get_text(user_lang, 'my_postings')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'search')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'search_location')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'favorites')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'info')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'language')))
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 def get_language_keyboard() -> InlineKeyboardMarkup:
@@ -1008,6 +1009,12 @@ async def add_favorite_callback(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
     user_lang = get_user_language(callback_query.from_user.id)
     
+    # Check if listing is still active
+    listing = get_listing_by_id(listing_id)
+    if not listing or not listing[17]:  # not active
+        await callback_query.answer(get_text(user_lang, 'posting_no_longer_available'), show_alert=True)
+        return
+    
     add_to_favorites(callback_query.from_user.id, listing_id)
     await callback_query.answer(get_text(user_lang, 'added_to_favorites'))
 
@@ -1164,6 +1171,295 @@ async def process_admin_feedback(message: Message, state: FSMContext):
     
     await message.answer(f"❌ E'lon #{listing_id} rad etildi va foydalanuvchiga xabar yuborildi!")
     await state.clear()
+
+def get_user_postings(user_id: int):
+    """Get all postings by user"""
+    conn = sqlite3.connect('real_estate.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT l.*, 
+               (SELECT COUNT(*) FROM favorites f WHERE f.listing_id = l.id) as favorite_count
+        FROM listings l 
+        WHERE l.user_id = ?
+        ORDER BY l.created_at DESC
+    ''', (user_id,))
+    postings = cursor.fetchall()
+    conn.close()
+    return postings
+
+def update_listing_status(listing_id: int, is_active: bool):
+    """Update listing active status"""
+    conn = sqlite3.connect('real_estate.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE listings 
+        SET is_approved = ?
+        WHERE id = ?
+    ''', (is_active, listing_id))
+    conn.commit()
+    conn.close()
+
+def delete_listing(listing_id: int):
+    """Delete listing and remove from favorites"""
+    conn = sqlite3.connect('real_estate.db')
+    cursor = conn.cursor()
+    
+    # First, get users who favorited this listing
+    cursor.execute('SELECT user_id FROM favorites WHERE listing_id = ?', (listing_id,))
+    favorite_users = cursor.fetchall()
+    
+    # Delete from favorites
+    cursor.execute('DELETE FROM favorites WHERE listing_id = ?', (listing_id,))
+    
+    # Delete the listing
+    cursor.execute('DELETE FROM listings WHERE id = ?', (listing_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    return [user[0] for user in favorite_users]  # Return list of user IDs who had it favorited
+
+def get_listing_favorites_users(listing_id: int):
+    """Get users who favorited this listing"""
+    conn = sqlite3.connect('real_estate.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM favorites WHERE listing_id = ?', (listing_id,))
+    users = cursor.fetchall()
+    conn.close()
+    return [user[0] for user in users]
+
+def get_posting_status_text(listing, user_lang):
+    """Get status text for posting"""
+    if listing[18] == 'pending':  # approval_status
+        return get_text(user_lang, 'posting_status_pending')
+    elif listing[18] == 'declined':
+        return get_text(user_lang, 'posting_status_declined')
+    elif listing[17]:  # is_approved (active)
+        return get_text(user_lang, 'posting_status_active')
+    else:
+        return get_text(user_lang, 'posting_status_inactive')
+
+def format_my_posting_display(listing, user_lang):
+    """Format posting for owner view"""
+    location_display = listing[8] if listing[8] else listing[7]
+    status_text = get_posting_status_text(listing, user_lang)
+    favorite_count = listing[22] if len(listing) > 22 else 0  # favorite_count from query
+    
+    listing_text = f"""
+🆔 <b>E'lon #{listing[0]}</b>
+📊 <b>Status:</b> {status_text}
+
+🏠 <b>{listing[2]}</b>
+🗺 <b>Manzil:</b> {location_display}
+💰 <b>Narx:</b> {listing[9]:,} so'm
+📐 <b>Maydon:</b> {listing[10]} m²
+🚪 <b>Xonalar:</b> {listing[11]}
+
+{get_text(user_lang, 'posting_stats', favorites=favorite_count)}
+
+📝 <b>Tavsif:</b> {listing[3][:100]}{'...' if len(listing[3]) > 100 else ''}
+"""
+    return listing_text
+
+def get_posting_management_keyboard(listing_id: int, is_active: bool, user_lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Create posting management keyboard"""
+    builder = InlineKeyboardBuilder()
+    
+    # Status toggle button
+    if is_active:
+        builder.add(InlineKeyboardButton(
+            text=get_text(user_lang, 'deactivate_posting'), 
+            callback_data=f"deactivate_post_{listing_id}"
+        ))
+    else:
+        builder.add(InlineKeyboardButton(
+            text=get_text(user_lang, 'activate_posting'), 
+            callback_data=f"activate_post_{listing_id}"
+        ))
+    
+    # Management buttons
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'delete_posting'), 
+        callback_data=f"delete_post_{listing_id}"
+    ))
+    
+    # Admin-only buttons
+    if is_admin:
+        builder.add(InlineKeyboardButton(
+            text="🔧 Admin Actions", 
+            callback_data=f"admin_post_{listing_id}"
+        ))
+    
+    builder.adjust(2)
+    return builder.as_markup()
+
+# Handlers for My Postings
+@dp.message(F.text.in_(['📝 Mening e\'lonlarim', '📝 Мои объявления', '📝 My Postings']))
+async def my_postings_handler(message: Message):
+    user_lang = get_user_language(message.from_user.id)
+    postings = get_user_postings(message.from_user.id)
+    
+    if not postings:
+        await message.answer(get_text(user_lang, 'no_my_postings'))
+        return
+    
+    await message.answer(f"📝 Sizning e'lonlaringiz: {len(postings)} ta")
+    
+    for posting in postings[:5]:  # Show first 5
+        posting_text = format_my_posting_display(posting, user_lang)
+        is_active = posting[17]  # is_approved
+        keyboard = get_posting_management_keyboard(
+            posting[0], is_active, user_lang, is_admin(message.from_user.id)
+        )
+        
+        # Show with photos if available
+        photo_file_ids = json.loads(posting[15]) if posting[15] else []
+        if photo_file_ids:
+            try:
+                await message.answer_photo(
+                    photo=photo_file_ids[0],
+                    caption=posting_text,
+                    reply_markup=keyboard
+                )
+            except:
+                await message.answer(posting_text, reply_markup=keyboard)
+        else:
+            await message.answer(posting_text, reply_markup=keyboard)
+
+# Status management callbacks
+@dp.callback_query(F.data.startswith('activate_post_'))
+async def activate_posting(callback_query):
+    listing_id = int(callback_query.data.split('_')[2])
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Check ownership or admin rights
+    listing = get_listing_by_id(listing_id)
+    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+        await callback_query.answer("⛔ Ruxsat yo'q!")
+        return
+    
+    # Activate the posting
+    update_listing_status(listing_id, True)
+    
+    await callback_query.message.edit_reply_markup(
+        reply_markup=get_posting_management_keyboard(
+            listing_id, True, user_lang, is_admin(callback_query.from_user.id)
+        )
+    )
+    await callback_query.answer(get_text(user_lang, 'posting_activated'))
+
+@dp.callback_query(F.data.startswith('deactivate_post_'))
+async def deactivate_posting(callback_query):
+    listing_id = int(callback_query.data.split('_')[2])
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Check ownership or admin rights
+    listing = get_listing_by_id(listing_id)
+    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+        await callback_query.answer("⛔ Ruxsat yo'q!")
+        return
+    
+    # Deactivate the posting
+    update_listing_status(listing_id, False)
+    
+    # Notify users who favorited it
+    await notify_favorite_users_posting_unavailable(listing_id, listing[2])
+    
+    await callback_query.message.edit_reply_markup(
+        reply_markup=get_posting_management_keyboard(
+            listing_id, False, user_lang, is_admin(callback_query.from_user.id)
+        )
+    )
+    await callback_query.answer(get_text(user_lang, 'posting_deactivated'))
+
+@dp.callback_query(F.data.startswith('delete_post_'))
+async def confirm_delete_posting(callback_query):
+    listing_id = int(callback_query.data.split('_')[2])
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Check ownership or admin rights
+    listing = get_listing_by_id(listing_id)
+    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+        await callback_query.answer("⛔ Ruxsat yo'q!")
+        return
+    
+    # Show confirmation dialog
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'yes_delete'), 
+        callback_data=f"confirm_delete_{listing_id}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'cancel_action'), 
+        callback_data=f"cancel_delete_{listing_id}"
+    ))
+    builder.adjust(2)
+    
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'confirm_delete'),
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith('confirm_delete_'))
+async def delete_posting_confirmed(callback_query):
+    listing_id = int(callback_query.data.split('_')[2])
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Check ownership or admin rights
+    listing = get_listing_by_id(listing_id)
+    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+        await callback_query.answer("⛔ Ruxsat yo'q!")
+        return
+    
+    # Delete the posting and get users who favorited it
+    favorite_users = delete_listing(listing_id)
+    
+    # Notify users who favorited it
+    await notify_favorite_users_posting_deleted(favorite_users, listing[2], user_lang)
+    
+    await callback_query.message.edit_text(get_text(user_lang, 'posting_deleted'))
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith('cancel_delete_'))
+async def cancel_delete_posting(callback_query):
+    listing_id = int(callback_query.data.split('_')[2])
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Get posting and show management interface again
+    listing = get_listing_by_id(listing_id)
+    if listing:
+        posting_text = format_my_posting_display(listing, user_lang)
+        keyboard = get_posting_management_keyboard(
+            listing_id, listing[17], user_lang, is_admin(callback_query.from_user.id)
+        )
+        
+        await callback_query.message.edit_text(posting_text, reply_markup=keyboard)
+    
+    await callback_query.answer()
+
+# Notification functions
+async def notify_favorite_users_posting_unavailable(listing_id: int, listing_title: str):
+    """Notify users when a favorited posting becomes unavailable"""
+    favorite_users = get_listing_favorites_users(listing_id)
+    
+    for user_id in favorite_users:
+        try:
+            user_lang = get_user_language(user_id)
+            message = get_text(user_lang, 'favorites_removed_notification', title=listing_title)
+            await bot.send_message(chat_id=user_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
+
+async def notify_favorite_users_posting_deleted(favorite_users: list, listing_title: str, user_lang: str):
+    """Notify users when a favorited posting is deleted"""
+    for user_id in favorite_users:
+        try:
+            message = get_text(user_lang, 'favorites_removed_notification', title=listing_title)
+            await bot.send_message(chat_id=user_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
+
 
 # Error handler
 @dp.error()
