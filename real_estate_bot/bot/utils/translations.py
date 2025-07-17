@@ -1052,3 +1052,61 @@ TRANSLATIONS = {
         'listing_declined': "❌ Your listing has been declined\n\n📝 Reason: {feedback}\n\nPlease fix the issues and resubmit.",
     }
 }
+
+
+
+
+
+
+    # Define all regions with their display names for each language
+regions_config = {
+        'uz': [
+            ('tashkent_city', '🏙 Toshkent shahri'),
+            ('tashkent_region', '🌄 Toshkent viloyati'),
+            ('andijon', '🏛 Andijon viloyati'),
+            ('buxoro', '🕌 Buxoro viloyati'),
+            ('fargona', '🌸 Farg\'ona viloyati'),
+            ('jizzax', '🌾 Jizzax viloyati'),
+            ('qashqadaryo', '🏔 Qashqadaryo viloyati'),
+            ('navoiy', '⛰ Navoiy viloyati'),
+            ('namangan', '🌿 Namangan viloyati'),
+            ('samarqand', '🏛 Samarqand viloyati'),
+            ('sirdaryo', '🌊 Sirdaryo viloyati'),
+            ('surxondaryo', '☀️ Surxondaryo viloyati'),
+            ('xorazm', '🏺 Xorazm viloyati'),
+            ('qoraqalpoqiston', '🦎 Qoraqalpog\'iston Respublikasi')
+        ],
+        'ru': [
+            ('tashkent_city', '🏙 Город Ташкент'),
+            ('tashkent_region', '🌄 Ташкентская область'),
+            ('andijon', '🏛 Андижанская область'),
+            ('buxoro', '🕌 Бухарская область'),
+            ('fargona', '🌸 Ферганская область'),
+            ('jizzax', '🌾 Джизакская область'),
+            ('qashqadaryo', '🏔 Кашкадарьинская область'),
+            ('navoiy', '⛰ Навоийская область'),
+            ('namangan', '🌿 Наманганская область'),
+            ('samarqand', '🏛 Самаркандская область'),
+            ('sirdaryo', '🌊 Сырдарьинская область'),
+            ('surxondaryo', '☀️ Сурхандарьинская область'),
+            ('xorazm', '🏺 Хорезмская область'),
+            ('qoraqalpoqiston', '🦎 Республика Каракалпакстан')
+        ],
+        'en': [
+            ('tashkent_city', '🏙 Tashkent City'),
+            ('tashkent_region', '🌄 Tashkent Region'),
+            ('andijon', '🏛 Andijan Region'),
+            ('buxoro', '🕌 Bukhara Region'),
+            ('fargona', '🌸 Fergana Region'),
+            ('jizzax', '🌾 Jizzakh Region'),
+            ('qashqadaryo', '🏔 Kashkadarya Region'),
+            ('navoiy', '⛰ Navoiy Region'),
+            ('namangan', '🌿 Namangan Region'),
+            ('samarqand', '🏛 Samarkand Region'),
+            ('sirdaryo', '🌊 Syrdarya Region'),
+            ('surxondaryo', '☀️ Surkhandarya Region'),
+            ('xorazm', '🏺 Khorezm Region'),
+            ('qoraqalpoqiston', '🦎 Republic of Karakalpakstan')
+        ]
+    }
+    

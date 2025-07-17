@@ -23,7 +23,8 @@ from dotenv import load_dotenv
 import sqlite3
 from collections import defaultdict
 from asyncio import create_task, sleep
-from .utils.translations import REGIONS_DATA, TRANSLATIONS
+from utils.translations import REGIONS_DATA, TRANSLATIONS, regions_config
+from utils.templates import get_listing_template
 
 # Load environment variables
 load_dotenv()
@@ -155,9 +156,6 @@ def init_db():
     
     conn.commit()
     conn.close()
-
-# Enhanced translations with all languages complete
-
 
 # FSM States for new listing flow with admin approval
 class ListingStates(StatesGroup):
@@ -353,133 +351,45 @@ def get_admin_review_keyboard(listing_id: int) -> InlineKeyboardMarkup:
     builder.adjust(2, 1)
     return builder.as_markup()
 
-def get_listing_template(user_lang: str, status: str, property_type: str) -> str:
-    """Generate template based on property type and status"""
-    
-    if user_lang == 'uz':
-        if status == 'rent':
-            return """
-E'lon mazmunini yozing.
-Shu namuna asosida e'loningizni yozing!
-
-🏠 KVARTIRA IJARAGA BERILADI
-📍 Shahar, Tuman 5-kvartal
-💰 Narxi: 300$–400$
-🛏 Xonalar: 2 xonali
-♨️ Kommunal: gaz, suv, svet bor
-🪚 Holati: yevro remont yoki o'rtacha
-🛋 Jihoz: jihozli yoki jihozsiz
-🕒 Muddat: qisqa yoki uzoq muddatga
-👥 Kimga: Shariy nikohga / oilaga / studentlarga
-
-🔴 Eslatma
-Ma'lumotlar qatorida tel raqamingizni bot so'ramaguncha yozmang, aks holda sizni telingiz jiringlashdan to'xtamaydi va biz siz yuborgan xabarni botdan o'chirib tashlash imkonsiz
-"""
-        else:  # sale
-            return """
-E'lon mazmunini yozing.
-Shu namuna asosida e'loningizni yozing!
-
-🏠 UY-JOY SOTILADI 
-📍 Shahar, Tuman
-💰 Narxi: 50,000$–80,000$
-🛏 Xonalar: 3 xonali
-📐 Maydon: 65 m²
-♨️ Kommunal: gaz, suv, svet bor
-🪚 Holati: yevro remont yoki o'rtacha
-🛋 Jihoz: jihozli yoki jihozsiz
-🏢 Qavat: 3/9
-
-🔴 Eslatma
-Ma'lumotlar qatorida tel raqamingizni bot so'ramaguncha yozmang, aks holda sizni telingiz jiringlashdan to'xtamaydi va biz siz yuborgan xabarni botdan o'chirib tashlash imkonsiz
-"""
-    elif user_lang == 'ru':
-        if status == 'rent':
-            return """
-Напишите содержание объявления.
-Пишите свое объявление по этому образцу!
-
-🏠 КВАРТИРА СДАЕТСЯ В АРЕНДУ
-📍 Город, Район 5-квартал
-💰 Цена: 300$–400$
-🛏 Комнаты: 2-комнатная
-♨️ Коммунальные: газ, вода, свет есть
-🪚 Состояние: евроремонт или среднее
-🛋 Мебель: с мебелью или без мебели
-🕒 Срок: краткосрочно или долгосрочно
-👥 Для кого: для гражданского брака / для семьи / для студентов
-
-🔴 Примечание
-Не пишите свой номер телефона в тексте, пока бот не попросит, иначе ваш телефон не перестанет звонить и мы не сможем удалить ваше сообщение из бота
-"""
-        else:  # sale
-            return """
-Напишите содержание объявления.
-Пишите свое объявление по этому образцу!
-
-🏠 ПРОДАЕТСЯ НЕДВИЖИМОСТЬ
-📍 Город, Район
-💰 Цена: 50,000$–80,000$
-🛏 Комнаты: 3-комнатная
-📐 Площадь: 65 м²
-♨️ Коммунальные: газ, вода, свет есть
-🪚 Состояние: евроремонт или среднее
-🛋 Мебель: с мебелью или без мебели
-🏢 Этаж: 3/9
-
-🔴 Примечание
-Не пишите свой номер телефона в тексте, пока бот не попросит, иначе ваш телефон не перестанет звонить и мы не сможем удалить ваше сообщение из бота
-"""
-    else:  # English
-        if status == 'rent':
-            return """
-Write the content of the listing.
-Write your listing based on this template!
-
-🏠 APARTMENT FOR RENT
-📍 City, District 5th Quarter
-💰 Price: $300–$400
-🛏 Rooms: 2-room
-♨️ Utilities: gas, water, electricity available
-🪚 Condition: euro renovation or average
-🛋 Furniture: furnished or unfurnished
-🕒 Period: short-term or long-term
-👥 For whom: for civil marriage / for family / for students
-
-🔴 Note
-Do not write your phone number in the text until the bot asks for it, otherwise your phone will not stop ringing and we cannot delete your message from the bot
-"""
-        else:  # sale
-            return """
-Write the content of the listing.
-Write your listing based on this template!
-
-🏠 PROPERTY FOR SALE
-📍 City, District
-💰 Price: $50,000–$80,000
-🛏 Rooms: 3-room
-📐 Area: 65 m²
-♨️ Utilities: gas, water, electricity available
-🪚 Condition: euro renovation or average
-🛋 Furniture: furnished or unfurnished
-🏢 Floor: 3/9
-
-🔴 Note
-Do not write your phone number in the text until the bot asks for it, otherwise your phone will not stop ringing and we cannot delete your message from the bot
-"""
 
 def format_listing_for_channel(listing) -> str:
-    """Format listing for channel posting"""
-    location = listing[8] if listing[8] else "Manzil ko'rsatilmagan"
+    """Format listing for channel posting with user's actual content"""
+    # Show exactly what user wrote + contact info
+    user_description = listing[3]  # User's actual content
+    contact_info = listing[14]
     
-    return f"""
-{listing[3]}
+    # Keep it simple for channel - just user content + contact
+    channel_text = f"""{user_description}
 
-📞 Aloqa: {listing[14]}
-🗺 Manzil: {location}
+📞 Aloqa: {contact_info}"""
+    
+    # Add hashtags based on property type and status
+    property_type = listing[4]  # property_type
+    status = listing[12]  # status
+    
+    channel_text += f"\n\n#{property_type} #{status}"
+    
+    return channel_text
 
-#{listing[4]} #{listing[12]}
-"""
+def format_listing_raw_display(listing, user_lang):
+    """Display listing with user's actual content, not template format"""
+    # Show the user's actual description content
+    user_description = listing[3]  # This is the actual content user wrote
+    
+    # Just add basic info at the end
+    location_display = listing[8] if listing[8] else listing[7]  # full_address or address
+    contact_info = listing[14]
+    
+    # Format: User content + minimal additional info
+    listing_text = f"""{user_description}
+
+📞 Aloqa: {contact_info}"""
+    
+    # Only add location if it's different from what's already in description
+    if location_display and location_display.strip():
+        listing_text += f"\n🗺 Manzil: {location_display}"
+    
+    return listing_text
 
 def get_main_menu_keyboard(user_lang: str) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
@@ -502,23 +412,22 @@ def get_language_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 def get_regions_keyboard(user_lang: str) -> InlineKeyboardMarkup:
-    """Create keyboard with all regions"""
+    """Create keyboard with all 14 regions of Uzbekistan"""
     builder = InlineKeyboardBuilder()
     
-    if user_lang == 'uz':
-        builder.add(InlineKeyboardButton(text="🏙 Toshkent shahri", callback_data="region_tashkent_city"))
-        builder.add(InlineKeyboardButton(text="🌄 Toshkent viloyati", callback_data="region_tashkent_region"))
-        builder.add(InlineKeyboardButton(text="🏛 Samarqand viloyati", callback_data="region_samarkand"))
-    elif user_lang == 'ru':
-        builder.add(InlineKeyboardButton(text="🏙 Город Ташкент", callback_data="region_tashkent_city"))
-        builder.add(InlineKeyboardButton(text="🌄 Ташкентская область", callback_data="region_tashkent_region"))
-        builder.add(InlineKeyboardButton(text="🏛 Самаркандская область", callback_data="region_samarkand"))
-    else:  # English
-        builder.add(InlineKeyboardButton(text="🏙 Tashkent City", callback_data="region_tashkent_city"))
-        builder.add(InlineKeyboardButton(text="🌄 Tashkent Region", callback_data="region_tashkent_region"))
-        builder.add(InlineKeyboardButton(text="🏛 Samarkand Region", callback_data="region_samarkand"))
+
+    # Get regions for the specified language, fallback to 'uz' if language not found
+    regions = regions_config.get(user_lang, regions_config['uz'])
     
-    builder.adjust(1)
+    # Add buttons for each region
+    for region_key, region_name in regions:
+        builder.add(InlineKeyboardButton(
+            text=region_name,
+            callback_data=f"region_{region_key}"
+        ))
+    
+    # Arrange buttons in a grid: 2 columns for better layout
+    builder.adjust(2)
     return builder.as_markup()
 
 def get_districts_keyboard(region_key: str, user_lang: str) -> InlineKeyboardMarkup:
@@ -687,23 +596,6 @@ def get_user_favorites(user_id: int):
     conn.close()
     return favorites
 
-def format_listing_display(listing, user_lang):
-    """Format listing for display with region/district info"""
-    location_display = listing[8] if listing[8] else listing[7]
-    
-    listing_text = f"""
-🏠 <b>{listing[2]}</b>
-
-🗺 <b>Joylashuv:</b> {location_display}
-💰 <b>Narx:</b> {listing[9]:,} so'm
-📐 <b>Maydon:</b> {listing[10]} m²
-🚪 <b>Xonalar:</b> {listing[11]}
-📞 <b>Aloqa:</b> {listing[14]}
-
-{listing[3][:200]}...
-"""
-    return listing_text
-
 async def post_to_channel(listing):
     """Post approved listing to channel"""
     try:
@@ -871,7 +763,7 @@ async def process_status(callback_query, state: FSMContext):
 async def process_region_selection(callback_query, state: FSMContext):
     user_lang = get_user_language(callback_query.from_user.id)
     
-    # FIX: Extract region key properly (everything after 'region_')
+    # Extract region key properly (everything after 'region_')
     region_key = callback_query.data[7:]  # Remove 'region_' prefix
     
     # Check if region exists
@@ -890,7 +782,7 @@ async def process_region_selection(callback_query, state: FSMContext):
 @dp.callback_query(F.data.startswith('district_'))
 async def process_district_selection(callback_query, state: FSMContext):
     user_lang = get_user_language(callback_query.from_user.id)
-    district_key = callback_query.data.split('_')[1]
+    district_key = callback_query.data[9:]
     
     await state.update_data(district=district_key)
     
@@ -1021,7 +913,8 @@ async def view_listings_handler(message: Message):
         return
     
     for listing in listings:
-        listing_text = format_listing_display(listing, user_lang)
+        # Use raw display instead of template
+        listing_text = format_listing_raw_display(listing, user_lang)
         keyboard = get_listing_keyboard(listing[0], user_lang)
         
         photo_file_ids = json.loads(listing[15]) if listing[15] else []
@@ -1035,6 +928,7 @@ async def view_listings_handler(message: Message):
                         reply_markup=keyboard
                     )
                 else:
+                    # For multiple photos, show user content as caption on first photo
                     media_group = MediaGroupBuilder(caption=listing_text)
                     for i, photo_id in enumerate(photo_file_ids[:10]):
                         if i == 0:
@@ -1043,9 +937,11 @@ async def view_listings_handler(message: Message):
                             media_group.add_photo(media=photo_id)
                     
                     await message.answer_media_group(media=media_group.build())
-                    await message.answer("👆 E'lon ma'lumotlari", reply_markup=keyboard)
+                    # Send keyboard separately for media groups
+                    await message.answer("👆 E'lon", reply_markup=keyboard)
                     
             except Exception as e:
+                # Fallback to text if photo fails
                 await message.answer(listing_text, reply_markup=keyboard)
         else:
             await message.answer(listing_text, reply_markup=keyboard)
@@ -1081,7 +977,8 @@ async def process_search(message: Message, state: FSMContext):
     await message.answer(f"🔍 Qidiruv natijalari: {len(listings)} ta e'lon topildi")
     
     for listing in listings[:3]:
-        listing_text = format_listing_display(listing, user_lang)
+        # Use raw display instead of template
+        listing_text = format_listing_raw_display(listing, user_lang)
         keyboard = get_listing_keyboard(listing[0], user_lang)
         
         photo_file_ids = json.loads(listing[15]) if listing[15] else []
@@ -1100,7 +997,7 @@ async def process_search(message: Message, state: FSMContext):
                         media_group.add_photo(media=photo_id)
                     
                     await message.answer_media_group(media=media_group.build())
-                    await message.answer("👆 E'lon ma'lumotlari", reply_markup=keyboard)
+                    await message.answer("👆 E'lon", reply_markup=keyboard)
             except:
                 await message.answer(listing_text, reply_markup=keyboard)
         else:
@@ -1142,7 +1039,8 @@ async def favorites_handler(message: Message):
     await message.answer(f"❤️ Sevimli e'lonlar: {len(favorites)} ta")
     
     for favorite in favorites[:5]:
-        listing_text = format_listing_display(favorite, user_lang)
+        # Use raw display instead of template
+        listing_text = format_listing_raw_display(favorite, user_lang)
         
         photo_file_ids = json.loads(favorite[15]) if favorite[15] else []
         if photo_file_ids:
