@@ -169,8 +169,10 @@ class ListingStates(StatesGroup):
     photos = State()             # Eighth: Photos
 
 class SearchStates(StatesGroup):
-    query = State()
-    location_search = State()
+    search_type = State()        # Choose search type (keyword or location)
+    keyword_query = State()      # For keyword search
+    location_region = State()    # For location search - region selection
+    location_district = State()  # For location search - district selection
 
 class AdminStates(StatesGroup):
     reviewing_listing = State()
@@ -361,7 +363,8 @@ def format_listing_for_channel(listing) -> str:
     # Keep it simple for channel - just user content + contact
     channel_text = f"""{user_description}
 
-📞 Aloqa: {contact_info}"""
+📞 Aloqa: {contact_info}
+\n🗺 Manzil: {listing[8]}"""
     
     # Add hashtags based on property type and status
     property_type = listing[4]  # property_type
@@ -397,12 +400,25 @@ def get_main_menu_keyboard(user_lang: str) -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text=get_text(user_lang, 'view_listings')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'my_postings')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'search')))
-    builder.add(KeyboardButton(text=get_text(user_lang, 'search_location')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'favorites')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'info')))
     builder.add(KeyboardButton(text=get_text(user_lang, 'language')))
-    builder.adjust(2, 2, 2, 2)
+    builder.adjust(2, 2, 2, 1)
     return builder.as_markup(resize_keyboard=True)
+
+def get_search_type_keyboard(user_lang: str) -> InlineKeyboardMarkup:
+    """Create keyboard for search type selection"""
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'search_by_keyword'), 
+        callback_data="search_keyword"
+    ))
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'search_by_location'), 
+        callback_data="search_location"
+    ))
+    builder.adjust(1)
+    return builder.as_markup()
 
 def get_language_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -947,24 +963,35 @@ async def view_listings_handler(message: Message):
         else:
             await message.answer(listing_text, reply_markup=keyboard)
 
+# NEW SEARCH HANDLERS WITH INTEGRATED OPTIONS
 @dp.message(F.text.in_(['🔍 Qidiruv', '🔍 Поиск', '🔍 Search']))
 async def search_handler(message: Message, state: FSMContext):
     user_lang = get_user_language(message.from_user.id)
-    await state.set_state(SearchStates.query)
-    await message.answer(get_text(user_lang, 'search_prompt'))
-
-@dp.message(F.text.in_(['🏘 Hudud bo\'yicha', '🏘 По району', '🏘 By location']))
-async def location_search_handler(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
-    
-    await state.set_state(SearchStates.location_search)
+    await state.set_state(SearchStates.search_type)
     await message.answer(
-        get_text(user_lang, 'select_region'),
-        reply_markup=get_regions_keyboard(user_lang)
+        get_text(user_lang, 'choose_search_type'),
+        reply_markup=get_search_type_keyboard(user_lang)
     )
 
-@dp.message(SearchStates.query)
-async def process_search(message: Message, state: FSMContext):
+@dp.callback_query(F.data == 'search_keyword')
+async def search_keyword_selected(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    await state.set_state(SearchStates.keyword_query)
+    await callback_query.message.edit_text(get_text(user_lang, 'search_prompt'))
+    await callback_query.answer()
+
+@dp.callback_query(F.data == 'search_location')
+async def search_location_selected(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    await state.set_state(SearchStates.location_region)
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'select_region_for_search'),
+        reply_markup=get_regions_keyboard(user_lang)
+    )
+    await callback_query.answer()
+
+@dp.message(SearchStates.keyword_query)
+async def process_keyword_search(message: Message, state: FSMContext):
     user_lang = get_user_language(message.from_user.id)
     query = message.text
     await state.clear()
@@ -1003,6 +1030,170 @@ async def process_search(message: Message, state: FSMContext):
                 await message.answer(listing_text, reply_markup=keyboard)
         else:
             await message.answer(listing_text, reply_markup=keyboard)
+
+# Handle region selection for location search
+@dp.callback_query(F.data.startswith('region_'), SearchStates.location_region)
+async def process_search_region_selection(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    # Extract region key properly (everything after 'region_')
+    region_key = callback_query.data[7:]  # Remove 'region_' prefix
+    
+    # Check if region exists
+    if region_key not in REGIONS_DATA.get(user_lang, {}):
+        await callback_query.answer("Region not found!")
+        return
+    
+    await state.update_data(search_region=region_key)
+    
+    # Create keyboard with districts + "All region" option
+    builder = InlineKeyboardBuilder()
+    
+    # Add "All region" option first
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'all_region'),
+        callback_data=f"search_all_region_{region_key}"
+    ))
+    
+    # Add districts
+    try:
+        districts = REGIONS_DATA[user_lang][region_key]['districts']
+        for district_key, district_name in districts.items():
+            builder.add(InlineKeyboardButton(
+                text=district_name,
+                callback_data=f"search_district_{district_key}"
+            ))
+    except KeyError:
+        pass
+    
+    # Add back button
+    builder.add(InlineKeyboardButton(
+        text=get_text(user_lang, 'back'),
+        callback_data="search_back_to_regions"
+    ))
+    
+    builder.adjust(1, 2, 2, 2, 2, 2, 1)
+    
+    await state.set_state(SearchStates.location_district)
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'select_district_or_all'),
+        reply_markup=builder.as_markup()
+    )
+    await callback_query.answer(get_text(user_lang, 'region_selected'))
+
+@dp.callback_query(F.data.startswith('search_all_region_'))
+async def process_search_all_region(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    region_key = callback_query.data[18:]  # Remove 'search_all_region_' prefix
+    
+    data = await state.get_data()
+    await state.clear()
+    
+    # Search only by region
+    listings = search_listings_by_location(region_key=region_key)
+    
+    if not listings:
+        await callback_query.message.edit_text(get_text(user_lang, 'no_location_results'))
+        return
+    
+    region_name = REGIONS_DATA[user_lang][region_key]['name']
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'location_search_results', region=region_name)
+    )
+    
+    for listing in listings[:3]:
+        listing_text = format_listing_raw_display(listing, user_lang)
+        keyboard = get_listing_keyboard(listing[0], user_lang)
+        
+        photo_file_ids = json.loads(listing[15]) if listing[15] else []
+        
+        if photo_file_ids:
+            try:
+                if len(photo_file_ids) == 1:
+                    await callback_query.message.answer_photo(
+                        photo=photo_file_ids[0],
+                        caption=listing_text,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media_group = MediaGroupBuilder(caption=listing_text)
+                    for photo_id in photo_file_ids[:5]:
+                        media_group.add_photo(media=photo_id)
+                    
+                    await callback_query.message.answer_media_group(media=media_group.build())
+                    await callback_query.message.answer("👆 E'lon", reply_markup=keyboard)
+            except:
+                await callback_query.message.answer(listing_text, reply_markup=keyboard)
+        else:
+            await callback_query.message.answer(listing_text, reply_markup=keyboard)
+    
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith('search_district_'))
+async def process_search_district_selection(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    district_key = callback_query.data[16:]  # Remove 'search_district_' prefix
+    
+    data = await state.get_data()
+    region_key = data.get('search_region')
+    await state.clear()
+    
+    # Search by both region and district
+    listings = search_listings_by_location(region_key=region_key, district_key=district_key)
+    
+    if not listings:
+        await callback_query.message.edit_text(get_text(user_lang, 'no_location_results'))
+        return
+    
+    try:
+        region_name = REGIONS_DATA[user_lang][region_key]['name']
+        district_name = REGIONS_DATA[user_lang][region_key]['districts'][district_key]
+        location_name = f"{district_name}, {region_name}"
+    except KeyError:
+        location_name = "Selected location"
+    
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'location_search_results', region=location_name)
+    )
+    
+    for listing in listings[:3]:
+        listing_text = format_listing_raw_display(listing, user_lang)
+        keyboard = get_listing_keyboard(listing[0], user_lang)
+        
+        photo_file_ids = json.loads(listing[15]) if listing[15] else []
+        
+        if photo_file_ids:
+            try:
+                if len(photo_file_ids) == 1:
+                    await callback_query.message.answer_photo(
+                        photo=photo_file_ids[0],
+                        caption=listing_text,
+                        reply_markup=keyboard
+                    )
+                else:
+                    media_group = MediaGroupBuilder(caption=listing_text)
+                    for photo_id in photo_file_ids[:5]:
+                        media_group.add_photo(media=photo_id)
+                    
+                    await callback_query.message.answer_media_group(media=media_group.build())
+                    await callback_query.message.answer("👆 E'lon", reply_markup=keyboard)
+            except:
+                await callback_query.message.answer(listing_text, reply_markup=keyboard)
+        else:
+            await callback_query.message.answer(listing_text, reply_markup=keyboard)
+    
+    await callback_query.answer()
+
+@dp.callback_query(F.data == 'search_back_to_regions')
+async def search_back_to_regions(callback_query, state: FSMContext):
+    user_lang = get_user_language(callback_query.from_user.id)
+    
+    await state.set_state(SearchStates.location_region)
+    await callback_query.message.edit_text(
+        get_text(user_lang, 'select_region_for_search'),
+        reply_markup=get_regions_keyboard(user_lang)
+    )
+    await callback_query.answer()
 
 @dp.callback_query(F.data.startswith('fav_add_'))
 async def add_favorite_callback(callback_query):
