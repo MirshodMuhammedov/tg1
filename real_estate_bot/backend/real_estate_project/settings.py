@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 from pathlib import Path
+from environs import Env
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -26,6 +27,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
+
+
+
 SECRET_KEY = 'django-insecure-^y#q23rzvhs=t5*^6ft(9%ezej1p%-1f53-9+lykokk62z@8&1'
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -88,8 +92,12 @@ WSGI_APPLICATION = 'real_estate_project.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+            'ENGINE': 'django.db.backends.postgresql_psycopg2',
+            'NAME': os.getenv('DB_NAME'),
+            'USER': os.getenv('DB_USER'),
+            'PASSWORD': os.getenv('DB_PASSWORD', '28082006'),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5433'),
     }
 }
 
@@ -194,3 +202,102 @@ LOGGING = {
 
 # Create logs directory
 os.makedirs(BASE_DIR / 'logs', exist_ok=True)
+
+
+
+ADMIN_ENABLED = True
+ADMIN_SITE_HEADER = "Real Estate Bot Administration"
+ADMIN_SITE_TITLE = "Real Estate Bot Admin"
+ADMIN_INDEX_TITLE = "Welcome to Real Estate Bot Administration"
+
+# Admin pagination
+ADMIN_PAGINATE_BY = 25
+
+# Admin date formats
+USE_L10N = True
+DATE_FORMAT = 'Y-m-d'
+DATETIME_FORMAT = 'Y-m-d H:i:s'
+
+# Enhanced logging for admin actions
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'admin_file': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': BASE_DIR / 'logs' / 'admin.log',
+            'maxBytes': 1024*1024*15,  # 15MB
+            'backupCount': 10,
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple'
+        },
+    },
+    'loggers': {
+        'django.contrib.admin': {
+            'handlers': ['admin_file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'real_estate': {
+            'handlers': ['admin_file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'payments': {
+            'handlers': ['admin_file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
+
+# Security settings for admin
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# Session settings for admin
+SESSION_COOKIE_AGE = 3600  # 1 hour
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+# Admin email settings (for notifications)
+ADMINS = [
+    ('Admin', 'admin@yourdomain.com'),
+]
+
+MANAGERS = ADMINS
+
+# Email configuration for admin notifications
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = os.getenv('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@yourdomain.com')
+
+# Create logs directory
+import os
+os.makedirs(BASE_DIR / 'logs', exist_ok=True)
+
+# Add to INSTALLED_APPS if not already present
+if 'django.contrib.admin' not in INSTALLED_APPS:
+    INSTALLED_APPS.append('django.contrib.admin')

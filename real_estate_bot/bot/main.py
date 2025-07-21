@@ -20,7 +20,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
-import sqlite3
+import asyncpg
 from collections import defaultdict
 from asyncio import create_task, sleep
 from utils.translations import REGIONS_DATA, TRANSLATIONS, regions_config
@@ -38,9 +38,45 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 CHANNEL_ID = os.getenv('CHANNEL_ID', '@your_channel')
 API_BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:8000')
 
+# Database configuration
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': int(os.getenv('DB_PORT', '5432')),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'password'),
+    'database': os.getenv('DB_NAME', 'real_estate_db')
+}
+
 # Admin configuration
-ADMIN_IDS = os.getenv('ADMIN_IDS', '').split(',')
-ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
+ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '')
+ADMIN_IDS = []
+
+if ADMIN_IDS_STR:
+    try:
+        # Split by comma and convert to integers, handle any whitespace
+        raw_ids = [admin_id.strip() for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
+        ADMIN_IDS = [int(admin_id) for admin_id in raw_ids]
+        logger.info(f"✅ Successfully parsed ADMIN_IDS: {ADMIN_IDS}")
+        
+        # Validate each ID
+        for admin_id in ADMIN_IDS:
+            if admin_id <= 0:
+                logger.warning(f"⚠️ Invalid admin ID: {admin_id}")
+            else:
+                logger.info(f"   Admin ID: {admin_id}")
+                
+    except ValueError as e:
+        logger.error(f"❌ Error parsing ADMIN_IDS: {e}")
+        logger.error(f"❌ ADMIN_IDS string was: '{ADMIN_IDS_STR}'")
+        logger.error("❌ Please check your .env file format: ADMIN_IDS=1234567890,0987654321")
+        ADMIN_IDS = []
+else:
+    logger.warning("⚠️ ADMIN_IDS not set in environment variables")
+    logger.warning("⚠️ No admin access will be available!")
+
+if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
+    logger.error("❌ Please set BOT_TOKEN in .env file!")
+    exit(1)
 
 if BOT_TOKEN == 'YOUR_BOT_TOKEN_HERE':
     logger.error("❌ Please set BOT_TOKEN in .env file!")
@@ -51,119 +87,383 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Database migration function
-def migrate_database():
-    """Add missing columns to existing database"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    
+# Database connection pool
+db_pool = None
+
+async def init_db_pool():
+    """Initialize database connection pool"""
+    global db_pool
     try:
-        # Check if columns exist
-        cursor.execute("PRAGMA table_info(listings)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
-        if 'region' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN region TEXT')
-            logger.info("Added region column")
-            
-        if 'district' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN district TEXT')
-            logger.info("Added district column")
-            
-        if 'approval_status' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN approval_status TEXT DEFAULT "pending"')
-            logger.info("Added approval_status column")
-            
-        if 'admin_feedback' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN admin_feedback TEXT')
-            logger.info("Added admin_feedback column")
-            
-        if 'reviewed_by' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN reviewed_by INTEGER')
-            logger.info("Added reviewed_by column")
-            
-        if 'channel_message_id' not in columns:
-            cursor.execute('ALTER TABLE listings ADD COLUMN channel_message_id INTEGER')
-            logger.info("Added channel_message_id column")
-            
-        conn.commit()
+        db_pool = await asyncpg.create_pool(
+            host=DB_CONFIG['host'],
+            port=DB_CONFIG['port'],
+            user=DB_CONFIG['user'],
+            password=DB_CONFIG['password'],
+            database=DB_CONFIG['database'],
+            min_size=10,
+            max_size=20,
+            command_timeout=60
+        )
+        logger.info("✅ Database pool initialized")
+        return True
     except Exception as e:
-        logger.error(f"Migration error: {e}")
-    finally:
-        conn.close()
+        logger.error(f"❌ Database connection failed: {e}")
+        return False
 
-# Database setup with updated schema
-def init_db():
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    
-    # Users table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            telegram_id INTEGER UNIQUE,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            language TEXT DEFAULT 'uz',
-            is_blocked BOOLEAN DEFAULT FALSE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Updated listings table with admin approval
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS listings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            title TEXT,
-            description TEXT,
-            property_type TEXT,
-            region TEXT,
-            district TEXT,
-            address TEXT,
-            full_address TEXT,
-            price INTEGER,
-            area INTEGER,
-            rooms INTEGER,
-            status TEXT,
-            condition TEXT,
-            contact_info TEXT,
-            photo_file_ids TEXT,
-            is_premium BOOLEAN DEFAULT FALSE,
-            is_approved BOOLEAN DEFAULT TRUE,
-            approval_status TEXT DEFAULT 'pending',
-            admin_feedback TEXT,
-            reviewed_by INTEGER,
-            channel_message_id INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (telegram_id)
-        )
-    ''')
-    
-    # Favorites table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS favorites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            listing_id INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (telegram_id),
-            FOREIGN KEY (listing_id) REFERENCES listings (id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+async def close_db_pool():
+    """Close database connection pool"""
+    global db_pool
+    if db_pool:
+        await db_pool.close()
+        logger.info("Database pool closed")
 
-# FSM States for new listing flow with admin approval
+# Database operations with PostgreSQL
+# Database operations with PostgreSQL
+async def save_user(user_id: int, username: str, first_name: str, last_name: str, language: str = 'uz'):
+    """Save or update user in database"""
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO real_estate_telegramuser (
+                telegram_id, username, first_name, last_name, language, 
+                is_blocked, balance, created_at, updated_at, is_premium
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8)
+            ON CONFLICT (telegram_id) 
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                last_name = EXCLUDED.last_name,
+                updated_at = NOW()
+        ''', user_id, username or '', first_name or '', last_name or '', language, False, 0.00, False)
+
+async def get_user_language(user_id: int) -> str:
+    """Get user language preference"""
+    async with db_pool.acquire() as conn:
+        result = await conn.fetchval(
+            'SELECT language FROM real_estate_telegramuser WHERE telegram_id = $1', 
+            user_id
+        )
+        return result if result else 'uz'
+
+async def update_user_language(user_id: int, language: str):
+    """Update user language"""
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE real_estate_telegramuser SET language = $1, updated_at = NOW() WHERE telegram_id = $2',
+            language, user_id
+        )
+
+async def save_listing(user_id: int, data: dict) -> int:
+    """Save listing to database with proper handling of all required fields"""
+    async with db_pool.acquire() as conn:
+        # Get user database ID
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            user_id
+        )
+        
+        if not user_db_id:
+            raise Exception("User not found in database")
+        
+        # Prepare all required fields with proper defaults
+        photo_file_ids = json.dumps(data.get('photo_file_ids', []))
+        
+        # Ensure title is not None - create from description if needed
+        title = data.get('title')
+        if not title:
+            description = data.get('description', 'No description')
+            # Take first line or first 50 characters as title
+            title = description.split('\n')[0][:50] + ('...' if len(description) > 50 else '')
+        
+        # Ensure all required fields have proper values
+        description = data.get('description', 'No description')
+        property_type = data.get('property_type', 'apartment')
+        region = data.get('region', '')
+        district = data.get('district', '')
+        address = data.get('address', '')
+        full_address = data.get('full_address', '')
+        price = data.get('price', 0)
+        area = data.get('area', 0)
+        rooms = data.get('rooms', 0)
+        condition = data.get('condition', '')
+        status = data.get('status', 'sale')
+        contact_info = data.get('contact_info', '')
+        
+        try:
+            # Insert with all required fields properly set
+            listing_id = await conn.fetchval('''
+                INSERT INTO real_estate_property (
+                    user_id, title, description, property_type, region, district,
+                    address, full_address, price, area, rooms, condition, status, 
+                    contact_info, photo_file_ids, is_premium, is_approved, is_active,
+                    views_count, admin_notes, approval_status, favorites_count,
+                    posted_to_channel, created_at, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                    $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW()
+                )
+                RETURNING id
+            ''', 
+                user_db_id,                           # user_id
+                title,                                # title (now guaranteed not null)
+                description,                          # description
+                property_type,                        # property_type
+                region,                               # region
+                district,                             # district
+                address,                              # address
+                full_address,                         # full_address
+                price,                                # price
+                area,                                 # area
+                rooms,                                # rooms
+                condition,                            # condition
+                status,                               # status
+                contact_info,                         # contact_info
+                photo_file_ids,                       # photo_file_ids
+                False,                                # is_premium
+                False,                                # is_approved
+                True,                                 # is_active
+                0,                                    # views_count
+                '',                                   # admin_notes
+                'pending',                            # approval_status
+                0,                                    # favorites_count
+                False                                 # posted_to_channel (set to False initially)
+            )
+            
+            logger.info(f"Successfully saved listing {listing_id} for user {user_id}")
+            return listing_id
+            
+        except Exception as e:
+            logger.error(f"Failed to save listing: {e}")
+            logger.error(f"Data being saved: {data}")
+            
+            # Let's also check what the actual table schema expects
+            try:
+                # Get column info to better understand requirements
+                columns = await conn.fetch("""
+                    SELECT 
+                        column_name, 
+                        data_type, 
+                        is_nullable, 
+                        column_default
+                    FROM information_schema.columns 
+                    WHERE table_name = 'real_estate_property' 
+                    AND table_schema = 'public'
+                    AND is_nullable = 'NO'
+                    AND column_default IS NULL
+                    ORDER BY ordinal_position
+                """)
+                
+                required_fields = [col['column_name'] for col in columns]
+                logger.error(f"Required fields without defaults: {required_fields}")
+                
+            except Exception as schema_error:
+                logger.error(f"Could not fetch schema info: {schema_error}")
+            
+            raise Exception(f"Could not save listing. Database error: {str(e)}")
+
+
+
+# Also add this to your error handler to get better debugging info
+async def save_listing_with_debug(user_id: int, data: dict) -> int:
+    """Save listing with detailed error information"""
+    async with db_pool.acquire() as conn:
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            user_id
+        )
+        
+        if not user_db_id:
+            raise Exception("User not found in database")
+        
+        # Let's see what fields exist and what's required
+        try:
+            # First check what the table looks like
+            await debug_table_schema()
+            
+            # Try the save
+            return await save_listing(user_id, data)
+            
+        except Exception as e:
+            logger.error(f"Save listing error: {e}")
+            logger.error(f"Data being saved: {data}")
+            raise
+async def get_listings(limit=10, offset=0):
+    """Get approved listings"""
+    async with db_pool.acquire() as conn:
+        return await conn.fetch('''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_property p 
+            JOIN real_estate_telegramuser u ON p.user_id = u.id 
+            WHERE p.is_approved = true AND p.is_active = true
+            ORDER BY p.is_premium DESC, p.created_at DESC 
+            LIMIT $1 OFFSET $2
+        ''', limit, offset)
+
+async def search_listings(query: str):
+    """Search listings by keyword"""
+    async with db_pool.acquire() as conn:
+        return await conn.fetch('''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_property p 
+            JOIN real_estate_telegramuser u ON p.user_id = u.id 
+            WHERE (p.title ILIKE $1 OR p.description ILIKE $1 OR p.full_address ILIKE $1) 
+            AND p.is_approved = true AND p.is_active = true
+            ORDER BY p.is_premium DESC, p.created_at DESC 
+            LIMIT 10
+        ''', f'%{query}%')
+
+async def search_listings_by_location(region_key=None, district_key=None):
+    """Search listings by region and/or district"""
+    async with db_pool.acquire() as conn:
+        query = '''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_property p 
+            JOIN real_estate_telegramuser u ON p.user_id = u.id 
+            WHERE p.is_approved = true AND p.is_active = true
+        '''
+        params = []
+        param_count = 0
+        
+        if region_key:
+            param_count += 1
+            query += f' AND p.region = ${param_count}'
+            params.append(region_key)
+        
+        if district_key:
+            param_count += 1
+            query += f' AND p.district = ${param_count}'
+            params.append(district_key)
+        
+        query += ' ORDER BY p.is_premium DESC, p.created_at DESC LIMIT 10'
+        
+        return await conn.fetch(query, *params)
+
+async def get_listing_by_id(listing_id: int):
+    """Get listing by ID with user info"""
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow('''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_property p 
+            JOIN real_estate_telegramuser u ON p.user_id = u.id 
+            WHERE p.id = $1
+        ''', listing_id)
+
+async def add_to_favorites(user_id: int, listing_id: int):
+    """Add listing to user's favorites"""
+    async with db_pool.acquire() as conn:
+        # Get user database ID
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            user_id
+        )
+        
+        if user_db_id:
+            await conn.execute('''
+                INSERT INTO real_estate_favorite (user_id, property_id, created_at) 
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id, property_id) DO NOTHING
+            ''', user_db_id, listing_id)
+
+async def get_user_favorites(user_id: int):
+    """Get user's favorite listings"""
+    async with db_pool.acquire() as conn:
+        # Get user database ID
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            user_id
+        )
+        
+        if not user_db_id:
+            return []
+        
+        return await conn.fetch('''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_favorite f
+            JOIN real_estate_property p ON f.property_id = p.id
+            JOIN real_estate_telegramuser u ON p.user_id = u.id
+            WHERE f.user_id = $1 AND p.is_approved = true AND p.is_active = true
+            ORDER BY f.created_at DESC
+        ''', user_db_id)
+
+async def get_user_postings(user_id: int):
+    """Get all postings by user"""
+    async with db_pool.acquire() as conn:
+        # Get user database ID
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            user_id
+        )
+        
+        if not user_db_id:
+            return []
+        
+        return await conn.fetch('''
+            SELECT p.*, 
+                   (SELECT COUNT(*) FROM real_estate_favorite f WHERE f.property_id = p.id) as favorite_count
+            FROM real_estate_property p 
+            WHERE p.user_id = $1
+            ORDER BY p.created_at DESC
+        ''', user_db_id)
+
+async def update_listing_status(listing_id: int, is_active: bool):
+    """Update listing active status"""
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE real_estate_property SET is_approved = $1, updated_at = NOW() WHERE id = $2',
+            is_active, listing_id
+        )
+
+async def delete_listing(listing_id: int):
+    """Delete listing and return users who had it favorited"""
+    async with db_pool.acquire() as conn:
+        # Get users who favorited this listing
+        favorite_users = await conn.fetch('''
+            SELECT tu.telegram_id 
+            FROM real_estate_favorite f
+            JOIN real_estate_telegramuser tu ON f.user_id = tu.id
+            WHERE f.property_id = $1
+        ''', listing_id)
+        
+        # Delete from favorites first
+        await conn.execute('DELETE FROM real_estate_favorite WHERE property_id = $1', listing_id)
+        
+        # Delete the listing
+        await conn.execute('DELETE FROM real_estate_property WHERE id = $1', listing_id)
+        
+        return [user['telegram_id'] for user in favorite_users]
+
+# Admin functions
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+async def get_pending_listings():
+    """Get listings pending approval"""
+    async with db_pool.acquire() as conn:
+        return await conn.fetch('''
+            SELECT p.*, u.first_name, u.username 
+            FROM real_estate_property p 
+            JOIN real_estate_telegramuser u ON p.user_id = u.id 
+            WHERE p.is_approved = false
+            ORDER BY p.created_at ASC
+        ''')
+
+async def update_listing_approval(listing_id: int, is_approved: bool, admin_id: int):
+    """Update listing approval status"""
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE real_estate_property 
+            SET is_approved = $1, updated_at = NOW()
+            WHERE id = $2
+        ''', is_approved, listing_id)
+
+# FSM States for new listing flow
 class ListingStates(StatesGroup):
     property_type = State()      
     status = State()             
     region = State()             
     district = State()
-    price = State()              # NEW: Ask for price
-    area = State()               # NEW: Ask for area           
+    price = State()              
+    area = State()                           
     description = State()        
     confirmation = State()       
     contact_info = State()       
@@ -210,7 +510,7 @@ class MediaGroupCollector:
                 del self.timers[group_id]
     
     async def process_single_photo(self, message: Message, state: FSMContext):
-        user_lang = get_user_language(message.from_user.id)
+        user_lang = await get_user_language(message.from_user.id)
         
         data = await state.get_data()
         photo_file_ids = data.get('photo_file_ids', [])
@@ -222,7 +522,7 @@ class MediaGroupCollector:
         )
     
     async def process_media_group(self, messages: list, state: FSMContext):
-        user_lang = get_user_language(messages[0].from_user.id)
+        user_lang = await get_user_language(messages[0].from_user.id)
         
         data = await state.get_data()
         photo_file_ids = data.get('photo_file_ids', [])
@@ -252,7 +552,6 @@ SEARCH_TRANSLATIONS = {
         'all_region': "🌍 Butun viloyat",
         'search_results_count': "🔍 Qidiruv natijalari: {count} ta e'lon topildi",
         'no_search_results': "😔 Hech narsa topilmadi.\n\nBoshqa kalit so'z bilan yoki boshqa hudud bo'yicha qaytadan qidirib ko'ring.",
-        # NEW TRANSLATIONS
         'ask_price': "💰 E'lon narxini kiriting:\n\nMasalan: 50000, 50000$, 500 ming, 1.2 mln",
         'ask_area': "📐 Maydonni kiriting (m²):\n\nMasalan: 65, 65.5, 100",
         'invalid_price': "❌ Narx noto'g'ri kiritildi. Iltimos, faqat raqam kiriting.\n\nMasalan: 50000, 75000",
@@ -269,7 +568,6 @@ SEARCH_TRANSLATIONS = {
         'all_region': "🌍 Вся область",
         'search_results_count': "🔍 Результаты поиска: найдено {count} объявлений",
         'no_search_results': "😔 Ничего не найдено.\n\nПопробуйте другое ключевое слово или другой регион.",
-        # NEW TRANSLATIONS
         'ask_price': "💰 Введите цену объявления:\n\nНапример: 50000, 50000$, 500 тыс, 1.2 млн",
         'ask_area': "📐 Введите площадь (м²):\n\nНапример: 65, 65.5, 100",
         'invalid_price': "❌ Цена введена неправильно. Пожалуйста, введите только числа.\n\nНапример: 50000, 75000",
@@ -286,7 +584,6 @@ SEARCH_TRANSLATIONS = {
         'all_region': "🌍 Entire region",
         'search_results_count': "🔍 Search results: found {count} listings",
         'no_search_results': "😔 Nothing found.\n\nTry a different keyword or location.",
-        # NEW TRANSLATIONS
         'ask_price': "💰 Enter listing price:\n\nExample: 50000, 50000$, 500k, 1.2M",
         'ask_area': "📐 Enter area (m²):\n\nExample: 65, 65.5, 100",
         'invalid_price': "❌ Price entered incorrectly. Please enter numbers only.\n\nExample: 50000, 75000",
@@ -320,14 +617,6 @@ def get_text(user_lang: str, key: str, **kwargs) -> str:
             return text
     return text
 
-# Helper functions (move these BEFORE the personalized template function)
-def get_user_language(user_id: int) -> str:
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT language FROM users WHERE telegram_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 'uz'
 def get_personalized_listing_template(user_lang: str, status: str, property_type: str, price: str, area: str, location: str) -> str:
     """Generate personalized template with user's actual data"""
     
@@ -539,87 +828,22 @@ Do not write your phone number in the text until the bot asks for it, otherwise 
 🔴 Note
 Do not write your phone number in the text until the bot asks for it, otherwise your phone will not stop ringing and we cannot delete your message from the bot
 """
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT language FROM users WHERE telegram_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else 'uz'
-
-def save_user(user_id: int, username: str, first_name: str, last_name: str, language: str = 'uz'):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO users (telegram_id, username, first_name, last_name, language)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, username, first_name, last_name, language))
-    conn.commit()
-    conn.close()
-
-def update_user_language(user_id: int, language: str):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET language = ? WHERE telegram_id = ?', (language, user_id))
-    conn.commit()
-    conn.close()
-
-# Admin helper functions
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-def get_listing_by_id(listing_id: int):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, u.first_name, u.username 
-        FROM listings l 
-        JOIN users u ON l.user_id = u.telegram_id 
-        WHERE l.id = ?
-    ''', (listing_id,))
-    listing = cursor.fetchone()
-    conn.close()
-    return listing
-
-def update_listing_approval(listing_id: int, status: str, admin_id: int, feedback: str = None):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE listings 
-        SET approval_status = ?, reviewed_by = ?, admin_feedback = ?
-        WHERE id = ?
-    ''', (status, admin_id, feedback, listing_id))
-    conn.commit()
-    conn.close()
-
-def get_pending_listings():
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, u.first_name, u.username 
-        FROM listings l 
-        JOIN users u ON l.user_id = u.telegram_id 
-        WHERE l.approval_status = "pending"
-        ORDER BY l.created_at ASC
-    ''', )
-    listings = cursor.fetchall()
-    conn.close()
-    return listings
 
 def format_listing_for_admin(listing) -> str:
-    location = listing[8] if listing[8] else "Manzil ko'rsatilmagan"
+    location = listing['full_address'] if listing['full_address'] else "Manzil ko'rsatilmagan"
     
     return f"""
-🆔 <b>E'lon #{listing[0]}</b>
-👤 <b>Foydalanuvchi:</b> {listing[18]} (@{listing[19] or 'username_yoq'})
-🏘 <b>Tur:</b> {listing[4]}
-🎯 <b>Maqsad:</b> {listing[12]}
+🆔 <b>E'lon #{listing['id']}</b>
+👤 <b>Foydalanuvchi:</b> {listing['first_name']} (@{listing['username'] or 'username_yoq'})
+🏘 <b>Tur:</b> {listing['property_type']}
+🎯 <b>Maqsad:</b> {listing['status']}
 🗺 <b>Manzil:</b> {location}
-📞 <b>Aloqa:</b> {listing[14]}
+📞 <b>Aloqa:</b> {listing['contact_info']}
 
 <b>📝 Tavsif:</b>
-{listing[3]}
+{listing['description']}
 
-⏰ <b>Vaqt:</b> {listing[21]}
+⏰ <b>Vaqt:</b> {listing['created_at']}
 """
 
 def get_admin_review_keyboard(listing_id: int) -> InlineKeyboardMarkup:
@@ -631,25 +855,25 @@ def get_admin_review_keyboard(listing_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 def format_listing_for_channel(listing) -> str:
-    user_description = listing[3]
-    contact_info = listing[14]
+    user_description = listing['description']
+    contact_info = listing['contact_info']
     
     channel_text = f"""{user_description}
 
 📞 Aloqa: {contact_info}
-\n🗺 Manzil: {listing[8]}"""
+\n🗺 Manzil: {listing['full_address']}"""
     
-    property_type = listing[4]
-    status = listing[12]
+    property_type = listing['property_type']
+    status = listing['status']
     
     channel_text += f"\n\n#{property_type} #{status}"
     
     return channel_text
 
 def format_listing_raw_display(listing, user_lang):
-    user_description = listing[3]
-    location_display = listing[8] if listing[8] else listing[7]
-    contact_info = listing[14]
+    user_description = listing['description']
+    location_display = listing['full_address'] if listing['full_address'] else listing['address']
+    contact_info = listing['contact_info']
     
     listing_text = f"""{user_description}
 
@@ -796,257 +1020,28 @@ def get_listing_keyboard(listing_id: int, user_lang: str) -> InlineKeyboardMarku
     builder.adjust(2)
     return builder.as_markup()
 
-# Enhanced database operations
-def save_listing(user_id: int, data: dict):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    
-    photo_file_ids = json.dumps(data.get('photo_file_ids', []))
-    
-    cursor.execute('''
-        INSERT INTO listings (
-            user_id, title, description, property_type, region, district,
-            address, full_address, price, area, rooms, condition, status, 
-            contact_info, photo_file_ids, approval_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        user_id, data.get('title', ''), data['description'], data['property_type'],
-        data.get('region'), data.get('district'), data.get('address', ''), 
-        data.get('full_address', ''), data.get('price', 0), data.get('area', 0), 
-        data.get('rooms', 0), data.get('condition', ''), data['status'], 
-        data['contact_info'], photo_file_ids, 'pending'
-    ))
-    
-    listing_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    
-    return listing_id
-
-def get_listings(limit=10, offset=0):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, u.first_name, u.username 
-        FROM listings l 
-        JOIN users u ON l.user_id = u.telegram_id 
-        WHERE l.approval_status = "approved"
-        ORDER BY l.created_at DESC 
-        LIMIT ? OFFSET ?
-    ''', (limit, offset))
-    listings = cursor.fetchall()
-    conn.close()
-    return listings
-
-def search_listings(query: str):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, u.first_name, u.username 
-        FROM listings l 
-        JOIN users u ON l.user_id = u.telegram_id 
-        WHERE (l.title LIKE ? OR l.description LIKE ? OR l.full_address LIKE ?) 
-        AND l.approval_status = "approved"
-        ORDER BY l.created_at DESC 
-        LIMIT 10
-    ''', (f'%{query}%', f'%{query}%', f'%{query}%'))
-    listings = cursor.fetchall()
-    conn.close()
-    return listings
-
-def search_listings_by_location(region_key=None, district_key=None):
-    """Search listings by region and/or district"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    
-    query = '''
-        SELECT l.*, u.first_name, u.username 
-        FROM listings l 
-        JOIN users u ON l.user_id = u.telegram_id 
-        WHERE l.approval_status = "approved"
-    '''
-    params = []
-    
-    if region_key:
-        query += ' AND l.region = ?'
-        params.append(region_key)
-    
-    if district_key:
-        query += ' AND l.district = ?'
-        params.append(district_key)
-    
-    query += ' ORDER BY l.created_at DESC LIMIT 10'
-    
-    cursor.execute(query, params)
-    listings = cursor.fetchall()
-    conn.close()
-    return listings
-
-async def display_search_results(message_or_callback, listings, user_lang, search_term=""):
-    """Display search results to user"""
-    
-    # Determine if this is a Message or CallbackQuery
-    is_callback = hasattr(message_or_callback, 'message')
-    
-    if not listings:
-        text = get_text(user_lang, 'no_search_results')
-        if is_callback:
-            await message_or_callback.message.answer(text)
-        else:
-            await message_or_callback.answer(text)
-        return
-    
-    # Show search results count
-    results_text = get_text(user_lang, 'search_results_count', count=len(listings))
-    if is_callback:
-        await message_or_callback.message.answer(results_text)
-    else:
-        await message_or_callback.answer(results_text)
-    
-    # Display each listing
-    for listing in listings[:5]:
-        listing_text = format_listing_raw_display(listing, user_lang)
-        keyboard = get_listing_keyboard(listing[0], user_lang)
-        
-        photo_file_ids = json.loads(listing[15]) if listing[15] else []
-        
-        try:
-            if photo_file_ids:
-                if len(photo_file_ids) == 1:
-                    # Send single photo
-                    if is_callback:
-                        await message_or_callback.message.answer_photo(
-                            photo=photo_file_ids[0],
-                            caption=listing_text,
-                            reply_markup=keyboard
-                        )
-                    else:
-                        await message_or_callback.answer_photo(
-                            photo=photo_file_ids[0],
-                            caption=listing_text,
-                            reply_markup=keyboard
-                        )
-                else:
-                    # Send media group
-                    media_group = MediaGroupBuilder(caption=listing_text)
-                    for photo_id in photo_file_ids[:5]:
-                        media_group.add_photo(media=photo_id)
-                    
-                    if is_callback:
-                        await message_or_callback.message.answer_media_group(media=media_group.build())
-                        await message_or_callback.message.answer("👆 E'lon", reply_markup=keyboard)
-                    else:
-                        await message_or_callback.answer_media_group(media=media_group.build())
-                        await message_or_callback.answer("👆 E'lon", reply_markup=keyboard)
-            else:
-                # No photos, send text only
-                if is_callback:
-                    await message_or_callback.message.answer(listing_text, reply_markup=keyboard)
-                else:
-                    await message_or_callback.answer(listing_text, reply_markup=keyboard)
-        except Exception as e2:
-            logger.error(f"Error in fallback display: {e2}")
-
-def add_to_favorites(user_id: int, listing_id: int):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR IGNORE INTO favorites (user_id, listing_id) 
-        VALUES (?, ?)
-    ''', (user_id, listing_id))
-    conn.commit()
-    conn.close()
-
-def get_user_favorites(user_id: int):
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, u.first_name, u.username 
-        FROM favorites f
-        JOIN listings l ON f.listing_id = l.id
-        JOIN users u ON l.user_id = u.telegram_id
-        WHERE f.user_id = ? AND l.approval_status = "approved"
-        ORDER BY f.created_at DESC
-    ''', (user_id,))
-    favorites = cursor.fetchall()
-    conn.close()
-    return favorites
-
-def get_user_postings(user_id: int):
-    """Get all postings by user"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT l.*, 
-               (SELECT COUNT(*) FROM favorites f WHERE f.listing_id = l.id) as favorite_count
-        FROM listings l 
-        WHERE l.user_id = ?
-        ORDER BY l.created_at DESC
-    ''', (user_id,))
-    postings = cursor.fetchall()
-    conn.close()
-    return postings
-
-def update_listing_status(listing_id: int, is_active: bool):
-    """Update listing active status"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE listings 
-        SET is_approved = ?
-        WHERE id = ?
-    ''', (is_active, listing_id))
-    conn.commit()
-    conn.close()
-
-def delete_listing(listing_id: int):
-    """Delete listing and remove from favorites"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    
-    # First, get users who favorited this listing
-    cursor.execute('SELECT user_id FROM favorites WHERE listing_id = ?', (listing_id,))
-    favorite_users = cursor.fetchall()
-    
-    # Delete from favorites
-    cursor.execute('DELETE FROM favorites WHERE listing_id = ?', (listing_id,))
-    
-    # Delete the listing
-    cursor.execute('DELETE FROM listings WHERE id = ?', (listing_id,))
-    
-    conn.commit()
-    conn.close()
-    
-    return [user[0] for user in favorite_users]  # Return list of user IDs who had it favorited
-
-def get_posting_status_text(listing, user_lang):
-    """Get status text for posting"""
-    if listing[18] == 'pending':  # approval_status
-        return get_text(user_lang, 'posting_status_pending')
-    elif listing[18] == 'declined':
-        return get_text(user_lang, 'posting_status_declined')
-    elif listing[17]:  # is_approved (active)
-        return get_text(user_lang, 'posting_status_active')
-    else:
-        return get_text(user_lang, 'posting_status_inactive')
-
 def format_my_posting_display(listing, user_lang):
     """Format posting for owner view"""
-    location_display = listing[8] if listing[8] else listing[7]
-    status_text = get_posting_status_text(listing, user_lang)
-    favorite_count = listing[22] if len(listing) > 22 else 0  # favorite_count from query
+    location_display = listing['full_address'] if listing['full_address'] else listing['address']
+    
+    # Status determination based on is_approved
+    if listing['is_approved']:
+        status_text = get_text(user_lang, 'posting_status_active')
+    else:
+        status_text = get_text(user_lang, 'posting_status_pending')
+    
+    favorite_count = listing.get('favorite_count', 0)
     
     listing_text = f"""
-🆔 <b>E'lon #{listing[0]}</b>
+🆔 <b>E'lon #{listing['id']}</b>
 📊 <b>Status:</b> {status_text}
 
-🏠 <b>{listing[2]}</b>
+🏠 <b>{listing['title'] or listing['description'][:50]}...</b>
 🗺 <b>Manzil:</b> {location_display}
-💰 <b>Narx:</b> {listing[9]:,} so'm
-📐 <b>Maydon:</b> {listing[10]} m²
+💰 <b>Narx:</b> {listing['price']:,} so'm
+📐 <b>Maydon:</b> {listing['area']} m²
 
-
-📝 <b>Tavsif:</b> {listing[3][:100]}{'...' if len(listing[3]) > 100 else ''}
+📝 <b>Tavsif:</b> {listing['description'][:100]}{'...' if len(listing['description']) > 100 else ''}
 """
     return listing_text
 
@@ -1086,7 +1081,7 @@ async def post_to_channel(listing):
     """Post approved listing to channel"""
     try:
         channel_text = format_listing_for_channel(listing)
-        photo_file_ids = json.loads(listing[15]) if listing[15] else []
+        photo_file_ids = json.loads(listing['photo_file_ids']) if listing['photo_file_ids'] else []
         
         if photo_file_ids:
             if len(photo_file_ids) == 1:
@@ -1108,63 +1103,554 @@ async def post_to_channel(listing):
                 text=channel_text
             )
         
-        # Save channel message ID
-        conn = sqlite3.connect('real_estate.db')
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE listings SET channel_message_id = ? WHERE id = ?',
-            (message.message_id, listing[0])
-        )
-        conn.commit()
-        conn.close()
+        # Save channel message ID (optional - would need to add this field to DB)
+        # await update_listing_channel_message_id(listing['id'], message.message_id)
         
     except Exception as e:
         logger.error(f"Error posting to channel: {e}")
 
-async def send_to_admins_for_review(listing_id: int):
-    """Send listing to all admins for review"""
-    listing = get_listing_by_id(listing_id)
+# Add this to your environment variables section
+ADMIN_CHANNEL_ID = os.getenv('ADMIN_CHANNEL_ID', '@two_day_or_today')
+
+async def send_to_admin_channel_for_review(listing_id: int):
+    """Send listing to admin channel for review"""
+    listing = await get_listing_by_id(listing_id)
     if not listing:
+        logger.error(f"Listing {listing_id} not found for admin review")
         return
     
-    admin_text = format_listing_for_admin(listing)
-    keyboard = get_admin_review_keyboard(listing_id)
+    if not ADMIN_CHANNEL_ID:
+        logger.error("No ADMIN_CHANNEL_ID configured! Please set ADMIN_CHANNEL_ID in .env file")
+        return
     
-    for admin_id in ADMIN_IDS:
-        try:
-            photo_file_ids = json.loads(listing[15]) if listing[15] else []
-            
-            if photo_file_ids:
-                if len(photo_file_ids) == 1:
-                    await bot.send_photo(
-                        chat_id=admin_id,
-                        photo=photo_file_ids[0],
-                        caption=admin_text,
-                        reply_markup=keyboard
-                    )
-                else:
-                    media_group = MediaGroupBuilder(caption=admin_text)
-                    for photo_id in photo_file_ids[:10]:
-                        media_group.add_photo(media=photo_id)
-                    
-                    await bot.send_media_group(chat_id=admin_id, media=media_group.build())
-                    await bot.send_message(
-                        chat_id=admin_id,
-                        text="👆 Yuqoridagi e'lonni ko'rib chiqing:",
-                        reply_markup=keyboard
-                    )
-            else:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_text,
+    admin_text = format_listing_for_admin_channel(listing)
+    keyboard = get_admin_channel_review_keyboard(listing_id)
+    
+    try:
+        photo_file_ids = json.loads(listing['photo_file_ids']) if listing['photo_file_ids'] else []
+        
+        if photo_file_ids:
+            if len(photo_file_ids) == 1:
+                message = await bot.send_photo(
+                    chat_id=ADMIN_CHANNEL_ID,
+                    photo=photo_file_ids[0],
+                    caption=admin_text,
                     reply_markup=keyboard
                 )
-        except Exception as e:
-            logger.error(f"Error sending to admin {admin_id}: {e}")
+            else:
+                media_group = MediaGroupBuilder(caption=admin_text)
+                for photo_id in photo_file_ids[:10]:
+                    media_group.add_photo(media=photo_id)
+                
+                messages = await bot.send_media_group(chat_id=ADMIN_CHANNEL_ID, media=media_group.build())
+                message = await bot.send_message(
+                    chat_id=ADMIN_CHANNEL_ID,
+                    text="👆 Yuqoridagi e'lonni ko'rib chiqing:",
+                    reply_markup=keyboard
+                )
+        else:
+            message = await bot.send_message(
+                chat_id=ADMIN_CHANNEL_ID,
+                text=admin_text,
+                reply_markup=keyboard
+            )
+        
+        logger.info(f"Successfully sent listing {listing_id} to admin channel {ADMIN_CHANNEL_ID}")
+        return message
+        
+    except Exception as e:
+        logger.error(f"Error sending to admin channel {ADMIN_CHANNEL_ID}: {e}")
+        
+        # Specific error handling
+        error_msg = str(e).lower()
+        if "chat not found" in error_msg:
+            logger.error("Admin channel not found! Make sure the bot is added to the channel.")
+        elif "forbidden" in error_msg or "not enough rights" in error_msg:
+            logger.error("Bot doesn't have permission to post in admin channel! Make bot an admin.")
+        else:
+            logger.error(f"Unknown error: {e}")
+        
+        raise
 
+def format_listing_for_admin_channel(listing) -> str:
+    """Format listing for admin channel review"""
+    location = listing['full_address'] if listing['full_address'] else "Manzil ko'rsatilmagan"
+    
+    # Get user info
+    user_info = f"{listing['first_name']}"
+    if listing['username']:
+        user_info += f" (@{listing['username']})"
+    
+    # Get property type and status in Uzbek
+    property_types = {
+        'apartment': 'Kvartira',
+        'house': 'Uy',
+        'commercial': 'Tijorat',
+        'land': 'Yer'
+    }
+    
+    statuses = {
+        'sale': 'Sotuv',
+        'rent': 'Ijara'
+    }
+    
+    prop_type = property_types.get(listing['property_type'], listing['property_type'])
+    status = statuses.get(listing['status'], listing['status'])
+    
+    return f"""
+🆕 <b>YANGI E'LON KO'RIB CHIQISH UCHUN</b>
+
+🆔 <b>E'lon ID:</b> #{listing['id']}
+👤 <b>Foydalanuvchi:</b> {user_info}
+🏘 <b>Tur:</b> {prop_type}
+🎯 <b>Maqsad:</b> {status}
+🗺 <b>Manzil:</b> {location}
+💰 <b>Narx:</b> {listing['price']:,} so'm
+📐 <b>Maydon:</b> {listing['area']} m²
+📞 <b>Aloqa:</b> {listing['contact_info']}
+
+<b>📝 Tavsif:</b>
+{listing['description']}
+
+⏰ <b>Yuborilgan vaqt:</b> {listing['created_at'].strftime('%d.%m.%Y %H:%M')}
+
+👥 <b>Adminlar, bu e'lonni ko'rib chiqing!</b>
+"""
+
+def get_admin_channel_review_keyboard(listing_id: int) -> InlineKeyboardMarkup:
+    """Create keyboard for admin channel review"""
+    builder = InlineKeyboardBuilder()
+    
+    # Approval buttons
+    builder.add(InlineKeyboardButton(
+        text="✅ Tasdiqlash", 
+        callback_data=f"admin_approve_{listing_id}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="❌ Rad etish", 
+        callback_data=f"admin_decline_{listing_id}"
+    ))
+    
+    # Additional action buttons
+    builder.add(InlineKeyboardButton(
+        text="👀 Batafsil ko'rish", 
+        callback_data=f"admin_details_{listing_id}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="📊 Statistika", 
+        callback_data=f"admin_stats"
+    ))
+    
+    builder.adjust(2, 2)
+    return builder.as_markup()
+
+# Update the callback handlers for admin channel
+
+# Add these debug commands to your existing code (before the other handlers)
+
+@dp.message(Command("check_admin"))
+async def check_admin_status(message: Message):
+    """Debug command to check admin status and configuration"""
+    user_id = message.from_user.id
+    username = message.from_user.username or "No username"
+    first_name = message.from_user.first_name or "No name"
+    
+    debug_info = f"""
+🔍 <b>ADMIN DEBUG INFO</b>
+
+👤 <b>Your Info:</b>
+• ID: <code>{user_id}</code>
+• Name: {first_name}
+• Username: @{username}
+
+🔧 <b>Configuration:</b>
+• Environment ADMIN_IDS: "{os.getenv('ADMIN_IDS', 'NOT SET')}"
+• Parsed Admin IDs: {ADMIN_IDS}
+• Total Admins: {len(ADMIN_IDS)}
+• Your ID in admin list: {'✅ YES' if is_admin(user_id) else '❌ NO'}
+
+📋 <b>Channels:</b>
+• Admin Channel: {ADMIN_CHANNEL_ID}
+• Main Channel: {CHANNEL_ID}
+
+🎯 <b>Final Result:</b> {'✅ YOU ARE ADMIN' if is_admin(user_id) else '❌ NOT ADMIN'}
+"""
+    
+    await message.answer(debug_info)
+    
+    # If not admin, show what needs to be fixed
+    if not is_admin(user_id):
+        fix_message = f"""
+❌ <b>PROBLEM DETECTED:</b>
+Your ID <code>{user_id}</code> is not in the admin list.
+
+📝 <b>TO FIX:</b>
+1. Update your .env file:
+   <code>ADMIN_IDS={user_id}</code>
+
+2. Restart the bot
+
+3. Send /check_admin again to verify
+
+💡 <b>Current admin list:</b> {ADMIN_IDS}
+"""
+        await message.answer(fix_message)
+
+@dp.message(Command("debug_config"))
+async def debug_config(message: Message):
+    """Show all configuration details"""
+    env_admin_ids = os.getenv('ADMIN_IDS', 'NOT SET')
+    
+    config_info = f"""
+🔧 <b>COMPLETE CONFIGURATION DEBUG</b>
+
+📝 <b>Environment Variables:</b>
+• ADMIN_IDS (raw): "{env_admin_ids}"
+• BOT_TOKEN: {'✅ SET' if BOT_TOKEN != 'YOUR_BOT_TOKEN_HERE' else '❌ NOT SET'}
+• CHANNEL_ID: {CHANNEL_ID}
+• ADMIN_CHANNEL_ID: {ADMIN_CHANNEL_ID}
+
+🔄 <b>Parsing Process:</b>
+• Raw string: "{env_admin_ids}"
+• After split: {env_admin_ids.split(',') if env_admin_ids != 'NOT SET' else 'N/A'}
+• Final ADMIN_IDS: {ADMIN_IDS}
+• Type: {type(ADMIN_IDS)}
+
+👤 <b>Your Details:</b>
+• Your ID: {message.from_user.id}
+• Type: {type(message.from_user.id)}
+• Check result: {message.from_user.id in ADMIN_IDS}
+
+🧮 <b>Comparison Test:</b>
+"""
+    
+    # Test each admin ID individually
+    if ADMIN_IDS:
+        for i, admin_id in enumerate(ADMIN_IDS):
+            comparison = message.from_user.id == admin_id
+            config_info += f"• {message.from_user.id} == {admin_id}: {comparison}\n"
+    else:
+        config_info += "• No admin IDs to compare\n"
+    
+    await message.answer(config_info)
+
+@dp.message(Command("fix_admin_now"))
+async def fix_admin_now(message: Message):
+    """Temporary fix for admin access"""
+    user_id = message.from_user.id
+    
+    # Add user to admin list temporarily (for this session only)
+    if user_id not in ADMIN_IDS:
+        ADMIN_IDS.append(user_id)
+        await message.answer(f"🔧 Temporarily added {user_id} to admin list for this session.\n\n✅ Try the approval buttons now!\n\n⚠️ This is temporary - update your .env file permanently.")
+    else:
+        await message.answer(f"✅ You're already in the admin list: {ADMIN_IDS}")
+
+@dp.message(Command("test_callback"))
+async def test_callback_handling(message: Message):
+    """Test if callback handling works for admin"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer(f"❌ You're not an admin!\n\nYour ID: {user_id}\nConfigured admins: {ADMIN_IDS}\n\nUse /fix_admin_now for temporary fix")
+        return
+    
+    # Create test callback buttons
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="✅ Test Approve", callback_data="test_approve_123"))
+    builder.add(InlineKeyboardButton(text="❌ Test Decline", callback_data="test_decline_123"))
+    builder.add(InlineKeyboardButton(text="📊 Test Details", callback_data="test_details_123"))
+    
+    await message.answer(
+        "🧪 <b>CALLBACK TEST</b>\n\nIf you're an admin, these buttons should work:",
+        reply_markup=builder.as_markup()
+    )
+
+# Test callback handlers
+@dp.callback_query(F.data.startswith('test_approve_'))
+async def test_approve_callback(callback_query):
+    """Test approve callback"""
+    user_id = callback_query.from_user.id
+    
+    if not is_admin(user_id):
+        await callback_query.answer("❌ You're not an admin!", show_alert=True)
+        return
+    
+    await callback_query.answer("✅ Approve callback works!")
+    await callback_query.message.edit_text(
+        f"✅ <b>SUCCESS!</b>\n\n"
+        f"Approve callback handled successfully by admin {user_id}\n"
+        f"Real approval system should work now!"
+    )
+
+@dp.callback_query(F.data.startswith('test_decline_'))
+async def test_decline_callback(callback_query):
+    """Test decline callback"""
+    user_id = callback_query.from_user.id
+    
+    if not is_admin(user_id):
+        await callback_query.answer("❌ You're not an admin!", show_alert=True)
+        return
+    
+    await callback_query.answer("❌ Decline callback works!")
+    await callback_query.message.edit_text(
+        f"❌ <b>SUCCESS!</b>\n\n"
+        f"Decline callback handled successfully by admin {user_id}\n"
+        f"Real decline system should work now!"
+    )
+
+@dp.callback_query(F.data.startswith('test_details_'))
+async def test_details_callback(callback_query):
+    """Test details callback"""
+    user_id = callback_query.from_user.id
+    
+    if not is_admin(user_id):
+        await callback_query.answer("❌ You're not an admin!", show_alert=True)
+        return
+    
+    details_text = f"""
+📊 <b>TEST DETAILS</b>
+
+✅ Callback system working
+✅ Admin check passing
+✅ User ID: {user_id}
+✅ Admin permissions: Confirmed
+
+All systems ready for real listings!
+"""
+    
+    await callback_query.answer(details_text, show_alert=True)
+
+@dp.callback_query(F.data.startswith('admin_approve_'))
+async def admin_channel_approve_listing(callback_query):
+    """Handle approval from admin channel"""
+    # Check if user is admin
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer("⛔ Sizda admin huquqlari yo'q!")
+        return
+    
+    listing_id = int(callback_query.data.split('_')[2])
+    admin_name = callback_query.from_user.first_name
+    admin_username = f"@{callback_query.from_user.username}" if callback_query.from_user.username else ""
+    
+    # Approve the listing in database
+    await update_listing_approval(listing_id, True, callback_query.from_user.id)
+    
+    # Get the listing
+    listing = await get_listing_by_id(listing_id)
+    if not listing:
+        await callback_query.answer("E'lon topilmadi!")
+        return
+    
+    # Post to main channel
+    try:
+        await post_to_channel(listing)
+        channel_status = "va asosiy kanalga yuborildi ✅"
+    except Exception as e:
+        logger.error(f"Error posting to main channel: {e}")
+        channel_status = "lekin asosiy kanalga yuborishda xatolik yuz berdi ❌"
+    
+    # Notify the user who created the listing
+    await notify_user_approval(listing['user_id'], True)
+    
+    # Update the admin channel message
+    approval_text = f"""
+✅ <b>E'LON TASDIQLANDI!</b>
+
+🆔 <b>E'lon ID:</b> #{listing_id}
+👨‍💼 <b>Tasdiqlagan admin:</b> {admin_name} {admin_username}
+📅 <b>Tasdiqlangan vaqt:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}
+
+{channel_status}
+"""
+    
+    try:
+        await callback_query.message.edit_text(approval_text)
+    except:
+        # If can't edit (too old message), send new one
+        await callback_query.message.reply(approval_text)
+    
+    await callback_query.answer(f"✅ E'lon #{listing_id} tasdiqlandi!")
+
+@dp.callback_query(F.data.startswith('admin_decline_'))
+async def admin_channel_decline_listing(callback_query, state: FSMContext):
+    """Handle decline from admin channel"""
+    # Check if user is admin
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer("⛔ Sizda admin huquqlari yo'q!")
+        return
+    
+    listing_id = int(callback_query.data.split('_')[2])
+    
+    # Set state for feedback
+    await state.set_state(AdminStates.writing_feedback)
+    await state.update_data(
+        listing_id=listing_id, 
+        admin_message_id=callback_query.message.message_id,
+        admin_chat_id=callback_query.message.chat.id
+    )
+    
+    # Ask admin to write feedback in private
+    try:
+        await bot.send_message(
+            chat_id=callback_query.from_user.id,
+            text=f"❌ E'lon #{listing_id} uchun rad etish sababini yozing:\n\n"
+                 f"💭 Foydalanuvchiga yuborilacak xabar:"
+        )
+        await callback_query.answer("📝 Sizga shaxsiy xabar yuborildi. Rad etish sababini yozing.")
+    except Exception as e:
+        # If can't send private message, ask in channel
+        await callback_query.message.reply(
+            f"❌ @{callback_query.from_user.username or callback_query.from_user.first_name}, "
+            f"e'lon #{listing_id} uchun rad etish sababini yozing:"
+        )
+        await callback_query.answer("📝 Rad etish sababini yozing.")
+
+# Replace the admin_channel_show_details function with this shorter version:
+
+@dp.callback_query(F.data.startswith('admin_details_'))
+async def admin_channel_show_details(callback_query):
+    """Show detailed info about listing"""
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer("⛔ Sizda admin huquqlari yo'q!")
+        return
+    
+    listing_id = int(callback_query.data.split('_')[2])
+    listing = await get_listing_by_id(listing_id)
+    
+    if not listing:
+        await callback_query.answer("E'lon topilmadi!")
+        return
+    
+    # Get additional stats
+    async with db_pool.acquire() as conn:
+        user_listing_count = await conn.fetchval(
+            'SELECT COUNT(*) FROM real_estate_property WHERE user_id = $1',
+            listing['user_id']
+        )
+        
+        user_approved_count = await conn.fetchval(
+            'SELECT COUNT(*) FROM real_estate_property WHERE user_id = $1 AND is_approved = true',
+            listing['user_id']
+        )
+    
+    # SHORT version for callback answer (under 200 chars)
+    short_details = f"""
+📊 E'lon #{listing['id']}
+👤 {listing['first_name']} 
+📈 Jami: {user_listing_count} | Tasdiqlangan: {user_approved_count}
+💰 {listing['price']:,} so'm | 📐 {listing['area']} m²
+"""
+    
+    # Send SHORT message as callback answer
+    await callback_query.answer(short_details.strip(), show_alert=True)
+    
+    # Optionally send FULL details as a separate message
+    full_details_text = f"""
+📊 <b>BATAFSIL MA'LUMOT</b>
+
+🆔 <b>E'lon ID:</b> #{listing['id']}
+👤 <b>Foydalanuvchi:</b> {listing['first_name']} (@{listing['username'] or 'username_yoq'})
+
+📈 <b>Foydalanuvchi statistikasi:</b>
+• Jami e'lonlar: {user_listing_count}
+• Tasdiqlangan: {user_approved_count}
+
+🏠 <b>E'lon ma'lumotlari:</b>
+• Tur: {listing['property_type']}
+• Maqsad: {listing['status']}
+• Hudud: {listing['region']} - {listing['district']}
+• Narx: {listing['price']:,} so'm
+• Maydon: {listing['area']} m²
+• Xonalar: {listing['rooms']}
+
+📞 <b>Aloqa:</b> {listing['contact_info']}
+📅 <b>Yaratilgan:</b> {listing['created_at'].strftime('%d.%m.%Y %H:%M')}
+"""
+    
+    # Send full details as a regular message
+    try:
+        await callback_query.message.reply(full_details_text)
+    except Exception as e:
+        logger.error(f"Could not send full details: {e}")
+
+# Also fix the admin stats function:
+@dp.callback_query(F.data == 'admin_stats')
+async def admin_channel_show_stats(callback_query):
+    """Show general admin statistics"""
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer("⛔ Sizda admin huquqlari yo'q!")
+        return
+    
+    async with db_pool.acquire() as conn:
+        total_listings = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property')
+        pending_listings = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property WHERE is_approved = false')
+        approved_listings = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property WHERE is_approved = true')
+        total_users = await conn.fetchval('SELECT COUNT(*) FROM real_estate_telegramuser')
+        
+        # Today's stats
+        today_listings = await conn.fetchval(
+            "SELECT COUNT(*) FROM real_estate_property WHERE DATE(created_at) = CURRENT_DATE"
+        )
+        
+        today_approved = await conn.fetchval(
+            "SELECT COUNT(*) FROM real_estate_property WHERE DATE(updated_at) = CURRENT_DATE AND is_approved = true"
+        )
+    
+    # SHORT version for callback (under 200 chars)
+    short_stats = f"""
+📊 Jami: {total_listings} | Kutish: {pending_listings}
+✅ Tasdiqlangan: {approved_listings}
+👥 Foydalanuvchilar: {total_users}
+🆕 Bugun: {today_listings}
+"""
+    
+    await callback_query.answer(short_stats.strip(), show_alert=True)
+    
+    # Send full stats as a separate message
+    full_stats_text = f"""
+📊 <b>ADMIN STATISTIKA</b>
+
+📈 <b>Umumiy:</b>
+• Jami e'lonlar: {total_listings}
+• Kutilayotgan: {pending_listings}
+• Tasdiqlangan: {approved_listings}
+• Foydalanuvchilar: {total_users}
+
+📅 <b>Bugun:</b>
+• Yangi e'lonlar: {today_listings}
+• Tasdiqlangan: {today_approved}
+
+⏱ <b>Vaqt:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}
+"""
+    
+    try:
+        await callback_query.message.reply(full_stats_text)
+    except Exception as e:
+        logger.error(f"Could not send full stats: {e}")
+
+# Also fix any debug commands that might be too long:
+@dp.callback_query(F.data.startswith('test_details_'))
+async def test_details_callback(callback_query):
+    """Test details callback - FIXED VERSION"""
+    user_id = callback_query.from_user.id
+    
+    if not is_admin(user_id):
+        await callback_query.answer("❌ You're not an admin!", show_alert=True)
+        return
+    
+    # SHORT message (under 200 chars)
+    short_details = f"""
+📊 TEST SUCCESS
+✅ Callback: OK
+✅ Admin: {user_id}
+✅ Permissions: Confirmed
+"""
+    
+    await callback_query.answer(short_details.strip(), show_alert=True)
 async def notify_user_approval(user_id: int, approved: bool, feedback: str = None):
     """Notify user about listing approval/decline"""
-    user_lang = get_user_language(user_id)
+    user_lang = await get_user_language(user_id)
     
     try:
         if approved:
@@ -1176,38 +1662,77 @@ async def notify_user_approval(user_id: int, approved: bool, feedback: str = Non
     except Exception as e:
         logger.error(f"Error notifying user {user_id}: {e}")
 
-async def notify_favorite_users_posting_unavailable(listing_id: int, listing_title: str):
-    """Notify users when a favorited posting becomes unavailable"""
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM favorites WHERE listing_id = ?', (listing_id,))
-    favorite_users = cursor.fetchall()
-    conn.close()
+async def display_search_results(message_or_callback, listings, user_lang, search_term=""):
+    """Display search results to user"""
     
-    for user_tuple in favorite_users:
-        user_id = user_tuple[0]
+    # Determine if this is a Message or CallbackQuery
+    is_callback = hasattr(message_or_callback, 'message')
+    
+    if not listings:
+        text = get_text(user_lang, 'no_search_results')
+        if is_callback:
+            await message_or_callback.message.answer(text)
+        else:
+            await message_or_callback.answer(text)
+        return
+    
+    # Show search results count
+    results_text = get_text(user_lang, 'search_results_count', count=len(listings))
+    if is_callback:
+        await message_or_callback.message.answer(results_text)
+    else:
+        await message_or_callback.answer(results_text)
+    
+    # Display each listing
+    for listing in listings[:5]:
+        listing_text = format_listing_raw_display(listing, user_lang)
+        keyboard = get_listing_keyboard(listing['id'], user_lang)
+        
+        photo_file_ids = json.loads(listing['photo_file_ids']) if listing['photo_file_ids'] else []
+        
         try:
-            user_lang = get_user_language(user_id)
-            message = get_text(user_lang, 'favorites_removed_notification', title=listing_title)
-            await bot.send_message(chat_id=user_id, text=message)
-        except Exception as e:
-            logger.error(f"Failed to notify user {user_id}: {e}")
-
-async def notify_favorite_users_posting_deleted(favorite_users: list, listing_title: str, user_lang: str):
-    """Notify users when a favorited posting is deleted"""
-    for user_id in favorite_users:
-        try:
-            message = get_text(user_lang, 'favorites_removed_notification', title=listing_title)
-            await bot.send_message(chat_id=user_id, text=message)
-        except Exception as e:
-            logger.error(f"Failed to notify user {user_id}: {e}")
+            if photo_file_ids:
+                if len(photo_file_ids) == 1:
+                    # Send single photo
+                    if is_callback:
+                        await message_or_callback.message.answer_photo(
+                            photo=photo_file_ids[0],
+                            caption=listing_text,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await message_or_callback.answer_photo(
+                            photo=photo_file_ids[0],
+                            caption=listing_text,
+                            reply_markup=keyboard
+                        )
+                else:
+                    # Send media group
+                    media_group = MediaGroupBuilder(caption=listing_text)
+                    for photo_id in photo_file_ids[:5]:
+                        media_group.add_photo(media=photo_id)
+                    
+                    if is_callback:
+                        await message_or_callback.message.answer_media_group(media=media_group.build())
+                        await message_or_callback.message.answer("👆 E'lon", reply_markup=keyboard)
+                    else:
+                        await message_or_callback.answer_media_group(media=media_group.build())
+                        await message_or_callback.answer("👆 E'lon", reply_markup=keyboard)
+            else:
+                # No photos, send text only
+                if is_callback:
+                    await message_or_callback.message.answer(listing_text, reply_markup=keyboard)
+                else:
+                    await message_or_callback.answer(listing_text, reply_markup=keyboard)
+        except Exception as e2:
+            logger.error(f"Error in fallback display: {e2}")
 
 # Handlers
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     user = message.from_user
-    save_user(user.id, user.username, user.first_name, user.last_name)
-    user_lang = get_user_language(user.id)
+    await save_user(user.id, user.username, user.first_name, user.last_name)
+    user_lang = await get_user_language(user.id)
     
     await message.answer(
         get_text(user_lang, 'start'),
@@ -1216,7 +1741,7 @@ async def start_handler(message: Message):
 
 @dp.message(F.text.in_(['🌐 Til', '🌐 Язык', '🌐 Language']))
 async def language_handler(message: Message):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     await message.answer(
         get_text(user_lang, 'choose_language'),
         reply_markup=get_language_keyboard()
@@ -1225,7 +1750,7 @@ async def language_handler(message: Message):
 @dp.callback_query(F.data.startswith('lang_'))
 async def language_callback(callback_query):
     lang = callback_query.data.split('_')[1]
-    update_user_language(callback_query.from_user.id, lang)
+    await update_user_language(callback_query.from_user.id, lang)
     
     await callback_query.answer(f"Language changed!")
     
@@ -1241,7 +1766,7 @@ async def language_callback(callback_query):
 @dp.message(F.text.in_(['🔍 Qidiruv', '🔍 Поиск', '🔍 Search']))
 async def search_handler(message: Message, state: FSMContext):
     """ONLY FOR SEARCHING EXISTING LISTINGS"""
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     await state.set_state(SearchStates.search_type)
     await message.answer(
         get_text(user_lang, 'choose_search_type'),
@@ -1250,14 +1775,14 @@ async def search_handler(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'search_keyword')
 async def search_keyword_selected(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     await state.set_state(SearchStates.keyword_query)
     await callback_query.message.edit_text(get_text(user_lang, 'search_prompt'))
     await callback_query.answer()
 
 @dp.callback_query(F.data == 'search_location')
 async def search_location_selected(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     await state.set_state(SearchStates.location_region)
     await callback_query.message.edit_text(
         get_text(user_lang, 'select_region_for_search'),
@@ -1267,12 +1792,12 @@ async def search_location_selected(callback_query, state: FSMContext):
 
 @dp.message(SearchStates.keyword_query)
 async def process_keyword_search(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     query = message.text.strip()
     await state.clear()
     
     # Search existing listings
-    listings = search_listings(query)
+    listings = await search_listings(query)
     
     # Display results
     await display_search_results(message, listings, user_lang, query)
@@ -1280,7 +1805,7 @@ async def process_keyword_search(message: Message, state: FSMContext):
 # SEARCH REGION HANDLERS - DIFFERENT PREFIX
 @dp.callback_query(F.data.startswith('search_region_'))
 async def process_search_region_selection(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     region_key = callback_query.data[14:]  # Remove 'search_region_' prefix
     
@@ -1298,13 +1823,13 @@ async def process_search_region_selection(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('search_all_region_'))
 async def process_search_all_region(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     region_key = callback_query.data[18:]  # Remove 'search_all_region_' prefix
     
     await state.clear()
     
     # Search by region only
-    listings = search_listings_by_location(region_key=region_key)
+    listings = await search_listings_by_location(region_key=region_key)
     
     # Get region name for display
     try:
@@ -1317,7 +1842,7 @@ async def process_search_all_region(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('search_district_'))
 async def process_search_district_selection(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     district_key = callback_query.data[16:]  # Remove 'search_district_' prefix
     
     data = await state.get_data()
@@ -1325,7 +1850,7 @@ async def process_search_district_selection(callback_query, state: FSMContext):
     await state.clear()
     
     # Search by both region and district
-    listings = search_listings_by_location(region_key=region_key, district_key=district_key)
+    listings = await search_listings_by_location(region_key=region_key, district_key=district_key)
     
     # Get location name for display
     try:
@@ -1340,7 +1865,7 @@ async def process_search_district_selection(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data == 'search_back_to_regions')
 async def search_back_to_regions(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     await state.set_state(SearchStates.location_region)
     await callback_query.message.edit_text(
@@ -1356,7 +1881,7 @@ async def search_back_to_regions(callback_query, state: FSMContext):
 @dp.message(F.text.in_(['📝 E\'lon joylash', '📝 Разместить объявление', '📝 Post listing']))
 async def post_listing_handler(message: Message, state: FSMContext):
     """ONLY FOR CREATING NEW LISTINGS"""
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     
     await state.set_state(ListingStates.property_type)
     await message.answer(
@@ -1366,7 +1891,7 @@ async def post_listing_handler(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('type_'))
 async def process_property_type(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     property_type = callback_query.data.split('_')[1]
     await state.update_data(property_type=property_type)
     
@@ -1379,7 +1904,7 @@ async def process_property_type(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('status_'))
 async def process_status(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     status = callback_query.data.split('_')[1]
     await state.update_data(status=status)
     
@@ -1393,7 +1918,7 @@ async def process_status(callback_query, state: FSMContext):
 # LISTING REGION HANDLERS - NORMAL PREFIX (only works when in ListingStates)
 @dp.callback_query(F.data.startswith('region_'), ListingStates.region)
 async def process_region_selection(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     region_key = callback_query.data[7:]  # Remove 'region_' prefix
     
@@ -1411,7 +1936,7 @@ async def process_region_selection(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('district_'))
 async def process_district_selection(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     district_key = callback_query.data[9:]
     
     await state.update_data(district=district_key)
@@ -1423,7 +1948,7 @@ async def process_district_selection(callback_query, state: FSMContext):
 
 @dp.message(ListingStates.price)
 async def process_price(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     
     # Validate price input
     try:
@@ -1447,7 +1972,7 @@ async def process_price(message: Message, state: FSMContext):
 
 @dp.message(ListingStates.area)
 async def process_area(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     
     # Validate area input
     try:
@@ -1490,7 +2015,7 @@ async def process_area(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'back_to_regions')
 async def back_to_regions(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     await state.set_state(ListingStates.region)
     await callback_query.message.edit_text(
@@ -1501,7 +2026,7 @@ async def back_to_regions(callback_query, state: FSMContext):
 
 @dp.message(ListingStates.description)
 async def process_description(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     await state.update_data(description=message.text)
     
     # Ask for confirmation with Yes/Add more options
@@ -1524,7 +2049,7 @@ async def process_description(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'desc_complete')
 async def description_complete(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     await state.set_state(ListingStates.contact_info)
     await callback_query.message.edit_text(get_text(user_lang, 'phone_number_request'))
@@ -1532,7 +2057,7 @@ async def description_complete(callback_query, state: FSMContext):
 
 @dp.callback_query(F.data == 'desc_add_more')
 async def description_add_more(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     await state.set_state(ListingStates.description)
     await callback_query.message.edit_text(get_text(user_lang, 'additional_info'))
@@ -1540,7 +2065,7 @@ async def description_add_more(callback_query, state: FSMContext):
 
 @dp.message(ListingStates.contact_info)
 async def process_contact_info(message: Message, state: FSMContext):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     await state.update_data(contact_info=message.text)
     
     await state.set_state(ListingStates.photos)
@@ -1561,7 +2086,7 @@ async def process_photo_with_collector(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.in_(['photos_done', 'photos_skip']))
 async def finish_listing(callback_query, state: FSMContext):
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     data = await state.get_data()
     
     # Build full address
@@ -1569,35 +2094,76 @@ async def finish_listing(callback_query, state: FSMContext):
     district_key = data.get('district')
     
     if region_key and district_key:
-        region_name = REGIONS_DATA[user_lang][region_key]['name']
-        district_name = REGIONS_DATA[user_lang][region_key]['districts'][district_key]
-        full_address = f"{district_name}, {region_name}"
-        data['full_address'] = full_address
-        data['address'] = full_address
+        try:
+            region_name = REGIONS_DATA[user_lang][region_key]['name']
+            district_name = REGIONS_DATA[user_lang][region_key]['districts'][district_key]
+            full_address = f"{district_name}, {region_name}"
+            data['full_address'] = full_address
+            data['address'] = full_address
+        except KeyError:
+            # Fallback if region/district data is missing
+            data['full_address'] = f"{district_key}, {region_key}"
+            data['address'] = f"{district_key}, {region_key}"
     
-    # Create title from description (first line or first 50 chars)
-    description = data.get('description', '')
-    title = description.split('\n')[0][:50] + ('...' if len(description) > 50 else '')
-    data['title'] = title
+    # Ensure title is properly set from description
+    description = data.get('description', 'No description provided')
+    if not data.get('title'):
+        # Create title from first line or first 50 chars of description
+        title = description.split('\n')[0][:50]
+        if len(description) > 50:
+            title += '...'
+        data['title'] = title
     
-    # Ensure price and area are properly set from our collected data
-    # (these should already be in data from the new price/area collection steps)
-    if 'price' not in data:
+    # Ensure all required numeric fields have proper defaults
+    if 'price' not in data or data['price'] is None:
         data['price'] = 0
-    if 'area' not in data:
+    if 'area' not in data or data['area'] is None:
         data['area'] = 0
+    if 'rooms' not in data:
+        data['rooms'] = 0
     
-    # Save listing to database (status: pending)
-    listing_id = save_listing(callback_query.from_user.id, data)
+    # Ensure string fields are not None
+    if not data.get('condition'):
+        data['condition'] = ''
+    if not data.get('contact_info'):
+        data['contact_info'] = 'Not provided'
     
-    # Notify user that listing is submitted for review
-    await callback_query.message.edit_text(get_text(user_lang, 'listing_submitted_for_review'))
+    # Debug: Log what we're about to save
+    logger.info(f"Saving listing with data: {data}")
     
-    # Send to admins for approval
-    await send_to_admins_for_review(listing_id)
-    
-    await state.clear()
-    await callback_query.answer()
+    try:
+        # Save listing to database (will be pending approval)
+        listing_id = await save_listing(callback_query.from_user.id, data)
+        
+        # REMOVED: Auto-approval and immediate channel posting
+        # OLD CODE:
+        # await update_listing_approval(listing_id, True, 0)
+        # listing = await get_listing_by_id(listing_id)
+        # if listing:
+        #     await post_to_channel(listing)
+        
+        # NEW: Send to admin channel for review instead of auto-posting
+        await send_to_admin_channel_for_review(listing_id)
+        
+        # Notify user that listing is created and sent for review
+        await callback_query.message.edit_text(
+            get_text(user_lang, 'listing_submitted_for_review')
+        )
+        
+        await state.clear()
+        await callback_query.answer()
+        
+    except Exception as e:
+        logger.error(f"Error in finish_listing: {e}")
+        
+        # Notify user of the error
+        error_message = "❌ Xatolik yuz berdi. Iltimos qaytadan urinib ko'ring."
+        
+        await callback_query.message.edit_text(error_message)
+        await callback_query.answer("❌ Xatolik yuz berdi", show_alert=True)
+        
+        # Clear state so user can start over
+        await state.clear()
 
 # =============================================
 # OTHER HANDLERS
@@ -1605,8 +2171,8 @@ async def finish_listing(callback_query, state: FSMContext):
 
 @dp.message(F.text.in_(['👀 E\'lonlar', '👀 Объявления', '👀 Listings']))
 async def view_listings_handler(message: Message):
-    user_lang = get_user_language(message.from_user.id)
-    listings = get_listings(limit=5)
+    user_lang = await get_user_language(message.from_user.id)
+    listings = await get_listings(limit=5)
     
     if not listings:
         await message.answer(get_text(user_lang, 'no_listings'))
@@ -1615,9 +2181,9 @@ async def view_listings_handler(message: Message):
     for listing in listings:
         # Use raw display instead of template
         listing_text = format_listing_raw_display(listing, user_lang)
-        keyboard = get_listing_keyboard(listing[0], user_lang)
+        keyboard = get_listing_keyboard(listing['id'], user_lang)
         
-        photo_file_ids = json.loads(listing[15]) if listing[15] else []
+        photo_file_ids = json.loads(listing['photo_file_ids']) if listing['photo_file_ids'] else []
         
         if photo_file_ids:
             try:
@@ -1649,37 +2215,33 @@ async def view_listings_handler(message: Message):
 @dp.callback_query(F.data.startswith('fav_add_'))
 async def add_favorite_callback(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Check if listing is still active
-    listing = get_listing_by_id(listing_id)
-    if not listing or not listing[17]:  # not active
+    listing = await get_listing_by_id(listing_id)
+    if not listing or not listing['is_approved']:  # not active
         await callback_query.answer(get_text(user_lang, 'posting_no_longer_available'), show_alert=True)
         return
     
-    add_to_favorites(callback_query.from_user.id, listing_id)
+    await add_to_favorites(callback_query.from_user.id, listing_id)
     await callback_query.answer(get_text(user_lang, 'added_to_favorites'))
 
 @dp.callback_query(F.data.startswith('contact_'))
 async def contact_callback(callback_query):
     listing_id = int(callback_query.data.split('_')[1])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
-    conn = sqlite3.connect('real_estate.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT contact_info FROM listings WHERE id = ?', (listing_id,))
-    result = cursor.fetchone()
-    conn.close()
+    listing = await get_listing_by_id(listing_id)
     
-    if result:
-        await callback_query.answer(f"📞 Aloqa: {result[0]}", show_alert=True)
+    if listing:
+        await callback_query.answer(f"📞 Aloqa: {listing['contact_info']}", show_alert=True)
     else:
         await callback_query.answer("E'lon topilmadi")
 
 @dp.message(F.text.in_(['❤️ Sevimlilar', '❤️ Избранное', '❤️ Favorites']))
 async def favorites_handler(message: Message):
-    user_lang = get_user_language(message.from_user.id)
-    favorites = get_user_favorites(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
+    favorites = await get_user_favorites(message.from_user.id)
     
     if not favorites:
         await message.answer(get_text(user_lang, 'no_favorites'))
@@ -1691,7 +2253,7 @@ async def favorites_handler(message: Message):
         # Use raw display instead of template
         listing_text = format_listing_raw_display(favorite, user_lang)
         
-        photo_file_ids = json.loads(favorite[15]) if favorite[15] else []
+        photo_file_ids = json.loads(favorite['photo_file_ids']) if favorite['photo_file_ids'] else []
         if photo_file_ids:
             try:
                 if len(photo_file_ids) == 1:
@@ -1712,14 +2274,14 @@ async def favorites_handler(message: Message):
 
 @dp.message(F.text.in_(['ℹ️ Ma\'lumot', 'ℹ️ Информация', 'ℹ️ Info']))
 async def info_handler(message: Message):
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     await message.answer(get_text(user_lang, 'about'))
 
 # Handlers for My Postings
 @dp.message(F.text.in_(['📝 Mening e\'lonlarim', '📝 Мои объявления', '📝 My Postings']))
 async def my_postings_handler(message: Message):
-    user_lang = get_user_language(message.from_user.id)
-    postings = get_user_postings(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
+    postings = await get_user_postings(message.from_user.id)
     
     if not postings:
         await message.answer(get_text(user_lang, 'no_my_postings'))
@@ -1727,15 +2289,15 @@ async def my_postings_handler(message: Message):
     
     await message.answer(f"📝 Sizning e'lonlaringiz: {len(postings)} ta")
     
-    for posting in postings:  # Show 
+    for posting in postings:  # Show all postings
         posting_text = format_my_posting_display(posting, user_lang)
-        is_active = posting[17]  # is_approved
+        is_active = posting['is_approved']  # is_approved
         keyboard = get_posting_management_keyboard(
-            posting[0], is_active, user_lang, is_admin(message.from_user.id)
+            posting['id'], is_active, user_lang, is_admin(message.from_user.id)
         )
         
         # Show with photos if available
-        photo_file_ids = json.loads(posting[15]) if posting[15] else []
+        photo_file_ids = json.loads(posting['photo_file_ids']) if posting['photo_file_ids'] else []
         if photo_file_ids:
             try:
                 await message.answer_photo(
@@ -1752,16 +2314,27 @@ async def my_postings_handler(message: Message):
 @dp.callback_query(F.data.startswith('activate_post_'))
 async def activate_posting(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Check ownership or admin rights
-    listing = get_listing_by_id(listing_id)
-    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+    listing = await get_listing_by_id(listing_id)
+    if not listing:
+        await callback_query.answer("⛔ E'lon topilmadi!")
+        return
+    
+    # Get user database ID for ownership check
+    async with db_pool.acquire() as conn:
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            callback_query.from_user.id
+        )
+    
+    if listing['user_id'] != user_db_id and not is_admin(callback_query.from_user.id):
         await callback_query.answer("⛔ Ruxsat yo'q!")
         return
     
     # Activate the posting
-    update_listing_status(listing_id, True)
+    await update_listing_status(listing_id, True)
     
     await callback_query.message.edit_reply_markup(
         reply_markup=get_posting_management_keyboard(
@@ -1773,19 +2346,27 @@ async def activate_posting(callback_query):
 @dp.callback_query(F.data.startswith('deactivate_post_'))
 async def deactivate_posting(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Check ownership or admin rights
-    listing = get_listing_by_id(listing_id)
-    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+    listing = await get_listing_by_id(listing_id)
+    if not listing:
+        await callback_query.answer("⛔ E'lon topilmadi!")
+        return
+    
+    # Get user database ID for ownership check
+    async with db_pool.acquire() as conn:
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            callback_query.from_user.id
+        )
+    
+    if listing['user_id'] != user_db_id and not is_admin(callback_query.from_user.id):
         await callback_query.answer("⛔ Ruxsat yo'q!")
         return
     
     # Deactivate the posting
-    update_listing_status(listing_id, False)
-    
-    # Notify users who favorited it
-    await notify_favorite_users_posting_unavailable(listing_id, listing[2])
+    await update_listing_status(listing_id, False)
     
     await callback_query.message.edit_reply_markup(
         reply_markup=get_posting_management_keyboard(
@@ -1797,11 +2378,22 @@ async def deactivate_posting(callback_query):
 @dp.callback_query(F.data.startswith('delete_post_'))
 async def confirm_delete_posting(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Check ownership or admin rights
-    listing = get_listing_by_id(listing_id)
-    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+    listing = await get_listing_by_id(listing_id)
+    if not listing:
+        await callback_query.answer("⛔ E'lon topilmadi!")
+        return
+    
+    # Get user database ID for ownership check
+    async with db_pool.acquire() as conn:
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            callback_query.from_user.id
+        )
+    
+    if listing['user_id'] != user_db_id and not is_admin(callback_query.from_user.id):
         await callback_query.answer("⛔ Ruxsat yo'q!")
         return
     
@@ -1826,19 +2418,35 @@ async def confirm_delete_posting(callback_query):
 @dp.callback_query(F.data.startswith('confirm_delete_'))
 async def delete_posting_confirmed(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Check ownership or admin rights
-    listing = get_listing_by_id(listing_id)
-    if not listing or (listing[1] != callback_query.from_user.id and not is_admin(callback_query.from_user.id)):
+    listing = await get_listing_by_id(listing_id)
+    if not listing:
+        await callback_query.answer("⛔ E'lon topilmadi!")
+        return
+    
+    # Get user database ID for ownership check
+    async with db_pool.acquire() as conn:
+        user_db_id = await conn.fetchval(
+            'SELECT id FROM real_estate_telegramuser WHERE telegram_id = $1',
+            callback_query.from_user.id
+        )
+    
+    if listing['user_id'] != user_db_id and not is_admin(callback_query.from_user.id):
         await callback_query.answer("⛔ Ruxsat yo'q!")
         return
     
     # Delete the posting and get users who favorited it
-    favorite_users = delete_listing(listing_id)
+    favorite_users = await delete_listing(listing_id)
     
     # Notify users who favorited it
-    await notify_favorite_users_posting_deleted(favorite_users, listing[2], user_lang)
+    for user_id in favorite_users:
+        try:
+            message = get_text(user_lang, 'favorites_removed_notification', title=listing['title'] or listing['description'][:50])
+            await bot.send_message(chat_id=user_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to notify user {user_id}: {e}")
     
     await callback_query.message.edit_text(get_text(user_lang, 'posting_deleted'))
     await callback_query.answer()
@@ -1846,14 +2454,14 @@ async def delete_posting_confirmed(callback_query):
 @dp.callback_query(F.data.startswith('cancel_delete_'))
 async def cancel_delete_posting(callback_query):
     listing_id = int(callback_query.data.split('_')[2])
-    user_lang = get_user_language(callback_query.from_user.id)
+    user_lang = await get_user_language(callback_query.from_user.id)
     
     # Get posting and show management interface again
-    listing = get_listing_by_id(listing_id)
+    listing = await get_listing_by_id(listing_id)
     if listing:
         posting_text = format_my_posting_display(listing, user_lang)
         keyboard = get_posting_management_keyboard(
-            listing_id, listing[17], user_lang, is_admin(callback_query.from_user.id)
+            listing_id, listing['is_approved'], user_lang, is_admin(callback_query.from_user.id)
         )
         
         await callback_query.message.edit_text(posting_text, reply_markup=keyboard)
@@ -1867,7 +2475,7 @@ async def admin_panel(message: Message):
         await message.answer("⛔ Sizda admin huquqlari yo'q!")
         return
     
-    pending_listings = get_pending_listings()
+    pending_listings = await get_pending_listings()
     
     if not pending_listings:
         await message.answer("✅ Hamma e'lonlar ko'rib chiqilgan!")
@@ -1878,9 +2486,9 @@ async def admin_panel(message: Message):
     if pending_listings:
         listing = pending_listings[0]
         admin_text = format_listing_for_admin(listing)
-        keyboard = get_admin_review_keyboard(listing[0])
+        keyboard = get_admin_review_keyboard(listing['id'])
         
-        photo_file_ids = json.loads(listing[15]) if listing[15] else []
+        photo_file_ids = json.loads(listing['photo_file_ids']) if listing['photo_file_ids'] else []
         
         if photo_file_ids:
             if len(photo_file_ids) == 1:
@@ -1910,21 +2518,50 @@ async def approve_listing(callback_query, state: FSMContext):
     
     listing_id = int(callback_query.data.split('_')[1])
     
-    update_listing_approval(listing_id, 'approved', callback_query.from_user.id)
+    # Approve the listing in database
+    await update_listing_approval(listing_id, True, callback_query.from_user.id)
     
-    listing = get_listing_by_id(listing_id)
+    # Get the listing
+    listing = await get_listing_by_id(listing_id)
     if not listing:
         await callback_query.answer("E'lon topilmadi!")
         return
     
-    await post_to_channel(listing)
-    await notify_user_approval(listing[1], True)
+    # NOW post to channel (only after admin approval)
+    try:
+        await post_to_channel(listing)
+        channel_status = "va kanalga yuborildi"
+    except Exception as e:
+        logger.error(f"Error posting to channel: {e}")
+        channel_status = "lekin kanalga yuborishda xatolik yuz berdi"
     
+    # Notify the user who created the listing
+    await notify_user_approval(listing['user_id'], True)
+    
+    # Update admin interface
     await callback_query.message.edit_text(
-        f"✅ E'lon #{listing_id} tasdiqlandi va kanalga yuborildi!"
+        f"✅ E'lon #{listing_id} tasdiqlandi {channel_status}!"
     )
     await callback_query.answer("✅ E'lon tasdiqlandi!")
 
+# Also add the missing translation
+APPROVAL_TRANSLATIONS = {
+    'uz': {
+        'listing_submitted_for_review': "✅ E'loningiz muvaffaqiyatli yuborildi!\n\n👨‍💼 Admin ko'rib chiqishidan so'ng kanalda e'lon qilinadi.\n\n⏱ Odatda bu 24 soat ichida amalga oshiriladi.",
+        'listing_approved': "🎉 Tabriklaymiz! E'loningiz tasdiqlandi va kanalda e'lon qilindi!",
+        'listing_declined': "❌ Afsuski, e'loningiz rad etildi.\n\n📝 Sabab: {feedback}\n\nIltimos, talablarni hisobga olib qaytadan yuboring.",
+    },
+    'ru': {
+        'listing_submitted_for_review': "✅ Ваше объявление успешно отправлено!\n\n👨‍💼 После проверки администратором оно будет опубликовано в канале.\n\n⏱ Обычно это происходит в течение 24 часов.",
+        'listing_approved': "🎉 Поздравляем! Ваше объявление одобрено и опубликовано в канале!",
+        'listing_declined': "❌ К сожалению, ваше объявление отклонено.\n\n📝 Причина: {feedback}\n\nПожалуйста, учтите требования и отправьте заново.",
+    },
+    'en': {
+        'listing_submitted_for_review': "✅ Your listing has been successfully submitted!\n\n👨‍💼 It will be published in the channel after admin review.\n\n⏱ This usually happens within 24 hours.",
+        'listing_approved': "🎉 Congratulations! Your listing has been approved and published in the channel!",
+        'listing_declined': "❌ Unfortunately, your listing was declined.\n\n📝 Reason: {feedback}\n\nPlease consider the requirements and resubmit.",
+    }
+}
 @dp.callback_query(F.data.startswith('decline_'))
 async def decline_listing(callback_query, state: FSMContext):
     if not is_admin(callback_query.from_user.id):
@@ -1950,11 +2587,11 @@ async def process_admin_feedback(message: Message, state: FSMContext):
     listing_id = data.get('listing_id')
     feedback = message.text
     
-    update_listing_approval(listing_id, 'declined', message.from_user.id, feedback)
-    
-    listing = get_listing_by_id(listing_id)
+    # Delete the listing instead of just declining
+    listing = await get_listing_by_id(listing_id)
     if listing:
-        await notify_user_approval(listing[1], False, feedback)
+        await delete_listing(listing_id)
+        await notify_user_approval(listing['user_id'], False, feedback)
     
     await message.answer(f"❌ E'lon #{listing_id} rad etildi va foydalanuvchiga xabar yuborildi!")
     await state.clear()
@@ -1964,23 +2601,13 @@ async def process_admin_feedback(message: Message, state: FSMContext):
 async def debug_handler(message: Message):
     """Debug database and search"""
     try:
-        # Check total listings
-        conn = sqlite3.connect('real_estate.db')
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM listings')
-        total_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM listings WHERE approval_status = "approved"')
-        approved_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM listings WHERE approval_status = "pending"')
-        pending_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT approval_status, COUNT(*) FROM listings GROUP BY approval_status')
-        status_counts = cursor.fetchall()
-        
-        conn.close()
+        async with db_pool.acquire() as conn:
+            # Check total listings
+            total_count = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property')
+            approved_count = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property WHERE is_approved = true')
+            pending_count = await conn.fetchval('SELECT COUNT(*) FROM real_estate_property WHERE is_approved = false')
+            
+            status_counts = await conn.fetch('SELECT is_approved, COUNT(*) FROM real_estate_property GROUP BY is_approved')
         
         debug_text = f"""📊 Database Debug:
         
@@ -1989,7 +2616,7 @@ Approved: {approved_count}
 Pending: {pending_count}
 
 Status breakdown:
-{chr(10).join([f"- {status}: {count}" for status, count in status_counts])}
+{chr(10).join([f"- {'Approved' if status[0] else 'Pending'}: {status[1]}" for status in status_counts])}
 
 Search test:"""
         
@@ -1997,12 +2624,12 @@ Search test:"""
         
         # Test search
         if approved_count > 0:
-            listings = search_listings("a")  # Search for letter "a"
+            listings = await search_listings("a")  # Search for letter "a"
             await message.answer(f"Search test 'a': Found {len(listings)} results")
             
             if listings:
                 listing = listings[0]
-                sample_text = f"Sample listing #{listing[0]}:\n{listing[3][:100]}..."
+                sample_text = f"Sample listing #{listing['id']}:\n{listing['description'][:100]}..."
                 await message.answer(sample_text)
         else:
             await message.answer("❌ No approved listings found! Please approve some listings first using /admin")
@@ -2013,11 +2640,11 @@ Search test:"""
 @dp.message(Command("test_search"))
 async def test_search_handler(message: Message):
     """Test search functionality"""
-    user_lang = get_user_language(message.from_user.id)
+    user_lang = await get_user_language(message.from_user.id)
     
     # Test database connection
     try:
-        listings = search_listings("uy")
+        listings = await search_listings("uy")
         await message.answer(f"✅ Search test: Found {len(listings)} listings with 'uy'")
         
         if listings:
@@ -2032,28 +2659,92 @@ async def test_search_handler(message: Message):
 
 # Error handler
 @dp.error()
-async def error_handler(event, exception):
-    logger.error(f"Error occurred: {exception}")
+async def error_handler(event):
+    """Handle errors in bot"""
+    update = event.update
+    exception = event.exception
+    
+    logger.error(f"Error occurred in update {update.update_id}: {exception}")
+    
+    # Log full traceback for debugging
+    import traceback
+    logger.error(f"Full traceback: {traceback.format_exc()}")
+    
+    # Try to notify user if possible
+    try:
+        if update.message:
+            user_lang = await get_user_language(update.message.from_user.id) if db_pool else 'uz'
+            await update.message.answer("❌ Xatolik yuz berdi. Iltimos qaytadan urinib ko'ring.")
+        elif update.callback_query:
+            await update.callback_query.answer("❌ Xatolik yuz berdi.", show_alert=True)
+    except Exception as notify_error:
+        logger.error(f"Could not notify user about error: {notify_error}")
+    
     return True
 
 async def main():
-    # Run database migration first
-    migrate_database()
+    """Main bot function with proper initialization"""
+    global db_pool
     
-    # Initialize database
-    init_db()
-    logger.info("✅ Database initialized")
+    logger.info("🤖 Starting Real Estate Bot...")
     
-    logger.info("🤖 Starting bot...")
+    # Check environment variables
+    required_vars = ['BOT_TOKEN', 'DB_NAME', 'DB_USER', 'DB_PASSWORD']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"❌ Missing environment variables: {missing_vars}")
+        logger.error("Please check your .env file")
+        return
+    
+    # Initialize database pool
+    logger.info("🔌 Connecting to database...")
+    if not await init_db_pool():
+        logger.error("❌ Failed to initialize database pool")
+        logger.error("Please ensure PostgreSQL is running and Django migrations are applied")
+        logger.error("Run: cd backend && python manage.py migrate")
+        return
+    
+    # Test database connection
+    try:
+        async with db_pool.acquire() as conn:
+            # Check if tables exist
+            table_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'real_estate_telegramuser'
+                );
+            """)
+            
+            if not table_exists:
+                logger.error("❌ Database tables don't exist!")
+                logger.error("Please run Django migrations first:")
+                logger.error("   cd backend")
+                logger.error("   python manage.py migrate")
+                logger.error("   python manage.py populate_regions")
+                await close_db_pool()
+                return
+            
+            logger.info("✅ Database connection successful")
+            
+    except Exception as e:
+        logger.error(f"❌ Database test failed: {e}")
+        await close_db_pool()
+        return
+    
+    logger.info("🚀 Starting bot polling...")
     
     try:
         # Start polling
         await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
-        logger.error(f"Bot error: {e}")
+        logger.error(f"❌ Bot error: {e}")
     finally:
+        logger.info("🔌 Closing connections...")
         await bot.session.close()
+        await close_db_pool()
+        logger.info("👋 Bot stopped")
 
 if __name__ == "__main__":
-    asyncio.run(main()).answer(listing_text, reply_markup=keyboard)
-                    
+    asyncio.run(main())

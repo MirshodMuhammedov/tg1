@@ -854,7 +854,6 @@ TRANSLATIONS = {
         'post_listing': "📝 E'lon joylash",
         'view_listings': "👀 E'lonlar",
         'search': "🔍 Qidiruv",
-        'search_location': "🏘 Hudud bo'yicha",
         'favorites': "❤️ Sevimlilar",
         'info': "ℹ️ Ma'lumot",
         'contact': "☎️ Aloqa",
@@ -901,7 +900,16 @@ TRANSLATIONS = {
         'about': "ℹ️ Bot haqida:\n\nBu bot uy-joy e'lonlari uchun yaratilgan.\n\n👨‍💻 Dasturchi: @your_username",
         'location_search_results': "🗺 {region} bo'yicha natijalar:",
         'no_location_results': "😔 Bu hududda e'lonlar topilmadi.",
-        # New template and admin translations
+        
+        # New search-related translations
+        'choose_search_type': "🔍 Qidiruv turini tanlang:",
+        'search_by_keyword': "📝 Kalit so'z bo'yicha",
+        'search_by_location': "🏘 Hudud bo'yicha",
+        'select_region_for_search': "🗺 Qidiruv uchun viloyatni tanlang:",
+        'select_district_or_all': "🏘 Tumanni tanlang yoki butun viloyat bo'yicha qidiring:",
+        'all_region': "🌍 Butun viloyat",
+        
+        # Template and admin translations
         'listing_template_shown': "Yuqoridagi namuna asosida e'loningizni yozing:",
         'is_description_complete': "E'lon tavsifi tayyor?",
         'yes_complete': "✅ Ha, tayyor",
@@ -914,7 +922,6 @@ TRANSLATIONS = {
         'listing_submitted_for_review': "📝 E'loningiz yuborildi!\n\n⏳ Adminlar tomonidan ko'rib chiqilmoqda...\nTasdiqlangandan so'ng kanalga joylanadi.",
         'listing_approved': "✅ E'loningiz tasdiqlandi!\n\n🎉 E'loningiz kanalga joylandi va boshqa foydalanuvchilar ko'rishi mumkin.",
         'listing_declined': "❌ E'loningiz rad etildi\n\n📝 Sabab: {feedback}\n\nIltimos, kamchiklarni bartaraf etib, qaytadan yuboring.",
-
 
         'my_postings': "📝 Mening e'lonlarim",
         'no_my_postings': "😔 Sizda hozircha e'lonlar yo'q\n\n📝 E'lon joylash uchun tegishli tugmani bosing",
@@ -943,7 +950,6 @@ TRANSLATIONS = {
         'post_listing': "📝 Разместить объявление",
         'view_listings': "👀 Объявления",
         'search': "🔍 Поиск",
-        'search_location': "🏘 По району",
         'favorites': "❤️ Избранное",
         'info': "ℹ️ Информация",
         'contact': "☎️ Контакты",
@@ -990,7 +996,16 @@ TRANSLATIONS = {
         'about': "ℹ️ О боте:\n\nЭтот бот создан для объявлений недвижимости.\n\n👨‍💻 Разработчик: @your_username",
         'location_search_results': "🗺 Результаты по {region}:",
         'no_location_results': "😔 В этом регионе объявлений не найдено.",
-        # New template and admin translations
+        
+        # New search-related translations
+        'choose_search_type': "🔍 Выберите тип поиска:",
+        'search_by_keyword': "📝 По ключевому слову",
+        'search_by_location': "🏘 По местоположению",
+        'select_region_for_search': "🗺 Выберите область для поиска:",
+        'select_district_or_all': "🏘 Выберите район или искать по всей области:",
+        'all_region': "🌍 Вся область",
+        
+        # Template and admin translations
         'listing_template_shown': "Напишите свое объявление по образцу выше:",
         'is_description_complete': "Описание объявления готово?",
         'yes_complete': "✅ Да, готово",
@@ -1003,9 +1018,6 @@ TRANSLATIONS = {
         'listing_submitted_for_review': "📝 Ваше объявление отправлено!\n\n⏳ Рассматривается администраторами...\nПосле одобрения будет размещено в канале.",
         'listing_approved': "✅ Ваше объявление одобрено!\n\n🎉 Объявление размещено в канале и доступно другим пользователям.",
         'listing_declined': "❌ Ваше объявление отклонено\n\n📝 Причина: {feedback}\n\nПожалуйста, устраните недочеты и отправьте повторно.",
-
-
-
 
         'my_postings': "📝 Мои объявления",
         'no_my_postings': "😔 У вас пока нет объявлений\n\n📝 Нажмите соответствующую кнопку для размещения",
@@ -1034,7 +1046,6 @@ TRANSLATIONS = {
         'post_listing': "📝 Post listing",
         'view_listings': "👀 Listings",
         'search': "🔍 Search",
-        'search_location': "🏘 By location",
         'favorites': "❤️ Favorites",
         'info': "ℹ️ Info",
         'contact': "☎️ Contact",
@@ -1081,7 +1092,16 @@ TRANSLATIONS = {
         'about': "ℹ️ About bot:\n\nThis bot is created for real estate listings.\n\n👨‍💻 Developer: @your_username",
         'location_search_results': "🗺 Results for {region}:",
         'no_location_results': "😔 No listings found in this region.",
-        # New template and admin translations
+        
+        # New search-related translations
+        'choose_search_type': "🔍 Choose search type:",
+        'search_by_keyword': "📝 By keyword",
+        'search_by_location': "🏘 By location",
+        'select_region_for_search': "🗺 Select region for search:",
+        'select_district_or_all': "🏘 Select district or search entire region:",
+        'all_region': "🌍 Entire region",
+        
+        # Template and admin translations
         'listing_template_shown': "Write your listing based on the template above:",
         'is_description_complete': "Is the listing description complete?",
         'yes_complete': "✅ Yes, complete",
@@ -1094,8 +1114,6 @@ TRANSLATIONS = {
         'listing_submitted_for_review': "📝 Your listing has been submitted!\n\n⏳ Being reviewed by administrators...\nWill be posted to channel after approval.",
         'listing_approved': "✅ Your listing has been approved!\n\n🎉 Your listing is now posted to the channel and visible to other users.",
         'listing_declined': "❌ Your listing has been declined\n\n📝 Reason: {feedback}\n\nPlease fix the issues and resubmit.",
-
-
 
         'my_postings': "📝 My Postings",
         'no_my_postings': "😔 You don't have any postings yet\n\n📝 Press the appropriate button to post a listing",
@@ -1119,60 +1137,93 @@ TRANSLATIONS = {
     }
 }
 
-
-
-
-
-
-    # Define all regions with their display names for each language
+# Define all regions with their display names for each language
 regions_config = {
-        'uz': [
-            ('tashkent_city', '🏙 Toshkent shahri'),
-            ('tashkent_region', '🌄 Toshkent viloyati'),
-            ('andijon', '🏛 Andijon viloyati'),
-            ('buxoro', '🕌 Buxoro viloyati'),
-            ('fargona', '🌸 Farg\'ona viloyati'),
-            ('jizzax', '🌾 Jizzax viloyati'),
-            ('qashqadaryo', '🏔 Qashqadaryo viloyati'),
-            ('navoiy', '⛰ Navoiy viloyati'),
-            ('namangan', '🌿 Namangan viloyati'),
-            ('samarqand', '🏛 Samarqand viloyati'),
-            ('sirdaryo', '🌊 Sirdaryo viloyati'),
-            ('surxondaryo', '☀️ Surxondaryo viloyati'),
-            ('xorazm', '🏺 Xorazm viloyati'),
-            ('qoraqalpoqiston', '🦎 Qoraqalpog\'iston Respublikasi')
-        ],
-        'ru': [
-            ('tashkent_city', '🏙 Город Ташкент'),
-            ('tashkent_region', '🌄 Ташкентская область'),
-            ('andijon', '🏛 Андижанская область'),
-            ('buxoro', '🕌 Бухарская область'),
-            ('fargona', '🌸 Ферганская область'),
-            ('jizzax', '🌾 Джизакская область'),
-            ('qashqadaryo', '🏔 Кашкадарьинская область'),
-            ('navoiy', '⛰ Навоийская область'),
-            ('namangan', '🌿 Наманганская область'),
-            ('samarqand', '🏛 Самаркандская область'),
-            ('sirdaryo', '🌊 Сырдарьинская область'),
-            ('surxondaryo', '☀️ Сурхандарьинская область'),
-            ('xorazm', '🏺 Хорезмская область'),
-            ('qoraqalpoqiston', '🦎 Республика Каракалпакстан')
-        ],
-        'en': [
-            ('tashkent_city', '🏙 Tashkent City'),
-            ('tashkent_region', '🌄 Tashkent Region'),
-            ('andijon', '🏛 Andijan Region'),
-            ('buxoro', '🕌 Bukhara Region'),
-            ('fargona', '🌸 Fergana Region'),
-            ('jizzax', '🌾 Jizzakh Region'),
-            ('qashqadaryo', '🏔 Kashkadarya Region'),
-            ('navoiy', '⛰ Navoiy Region'),
-            ('namangan', '🌿 Namangan Region'),
-            ('samarqand', '🏛 Samarkand Region'),
-            ('sirdaryo', '🌊 Syrdarya Region'),
-            ('surxondaryo', '☀️ Surkhandarya Region'),
-            ('xorazm', '🏺 Khorezm Region'),
-            ('qoraqalpoqiston', '🦎 Republic of Karakalpakstan')
-        ]
+    'uz': [
+        ('tashkent_city', '🏙 Toshkent shahri'),
+        ('tashkent_region', '🌄 Toshkent viloyati'),
+        ('andijon', '🏛 Andijon viloyati'),
+        ('buxoro', '🕌 Buxoro viloyati'),
+        ('fargona', '🌸 Farg\'ona viloyati'),
+        ('jizzax', '🌾 Jizzax viloyati'),
+        ('qashqadaryo', '🏔 Qashqadaryo viloyati'),
+        ('navoiy', '⛰ Navoiy viloyati'),
+        ('namangan', '🌿 Namangan viloyati'),
+        ('samarqand', '🏛 Samarqand viloyati'),
+        ('sirdaryo', '🌊 Sirdaryo viloyati'),
+        ('surxondaryo', '☀️ Surxondaryo viloyati'),
+        ('xorazm', '🏺 Xorazm viloyati'),
+        ('qoraqalpoqiston', '🦎 Qoraqalpog\'iston Respublikasi')
+    ],
+    'ru': [
+        ('tashkent_city', '🏙 Город Ташкент'),
+        ('tashkent_region', '🌄 Ташкентская область'),
+        ('andijon', '🏛 Андижанская область'),
+        ('buxoro', '🕌 Бухарская область'),
+        ('fargona', '🌸 Ферганская область'),
+        ('jizzax', '🌾 Джизакская область'),
+        ('qashqadaryo', '🏔 Кашкадарьинская область'),
+        ('navoiy', '⛰ Навоийская область'),
+        ('namangan', '🌿 Наманганская область'),
+        ('samarqand', '🏛 Самаркандская область'),
+        ('sirdaryo', '🌊 Сырдарьинская область'),
+        ('surxondaryo', '☀️ Сурхандарьинская область'),
+        ('xorazm', '🏺 Хорезмская область'),
+        ('qoraqalpoqiston', '🦎 Республика Каракалпакстан')
+    ],
+    'en': [
+        ('tashkent_city', '🏙 Tashkent City'),
+        ('tashkent_region', '🌄 Tashkent Region'),
+        ('andijon', '🏛 Andijan Region'),
+        ('buxoro', '🕌 Bukhara Region'),
+        ('fargona', '🌸 Fergana Region'),
+        ('jizzax', '🌾 Jizzakh Region'),
+        ('qashqadaryo', '🏔 Kashkadarya Region'),
+        ('navoiy', '⛰ Navoiy Region'),
+        ('namangan', '🌿 Namangan Region'),
+        ('samarqand', '🏛 Samarkand Region'),
+        ('sirdaryo', '🌊 Syrdarya Region'),
+        ('surxondaryo', '☀️ Surkhandarya Region'),
+        ('xorazm', '🏺 Khorezm Region'),
+        ('qoraqalpoqiston', '🦎 Republic of Karakalpakstan')
+    ]
+}
+
+
+# Add these translations to your existing TRANSLATIONS dictionary
+
+SEARCH_TRANSLATIONS = {
+    'uz': {
+        'choose_search_type': "🔍 Qidiruv turini tanlang:",
+        'search_by_keyword': "📝 Kalit so'z bo'yicha qidiruv",
+        'search_by_location': "🏘 Hudud bo'yicha qidiruv",
+        'search_prompt': "🔍 Qidirish uchun kalit so'z kiriting:",
+        'select_region_for_search': "🗺 Qidiruv uchun viloyatni tanlang:",
+        'select_district_or_all': "🏘 Tumanni tanlang yoki butun viloyat bo'yicha qidiring:",
+        'all_region': "🌍 Butun viloyat",
+        'search_results_count': "🔍 Qidiruv natijalari: {count} ta e'lon topildi",
+        'no_search_results': "😔 Hech narsa topilmadi.\nBoshqa kalit so'z bilan qaytadan urining.",
+    },
+    'ru': {
+        'choose_search_type': "🔍 Выберите тип поиска:",
+        'search_by_keyword': "📝 Поиск по ключевому слову",
+        'search_by_location': "🏘 Поиск по местоположению",
+        'search_prompt': "🔍 Введите ключевое слово для поиска:",
+        'select_region_for_search': "🗺 Выберите область для поиска:",
+        'select_district_or_all': "🏘 Выберите район или искать по всей области:",
+        'all_region': "🌍 Вся область",
+        'search_results_count': "🔍 Результаты поиска: найдено {count} объявлений",
+        'no_search_results': "😔 Ничего не найдено.\nПопробуйте другое ключевое слово.",
+    },
+    'en': {
+        'choose_search_type': "🔍 Choose search type:",
+        'search_by_keyword': "📝 Search by keyword",
+        'search_by_location': "🏘 Search by location",
+        'search_prompt': "🔍 Enter keyword to search:",
+        'select_region_for_search': "🗺 Select region for search:",
+        'select_district_or_all': "🏘 Select district or search entire region:",
+        'all_region': "🌍 Entire region",
+        'search_results_count': "🔍 Search results: found {count} listings",
+        'no_search_results': "😔 Nothing found.\nTry a different keyword.",
     }
-    
+}
